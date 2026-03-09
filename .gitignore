@@ -6,3 +6,6 @@ build/
 .eggs/
 *.egg
 .venv/
+.claude/
+CLAUDE.md
+*_ghidra/

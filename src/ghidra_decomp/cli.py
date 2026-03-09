@@ -7,7 +7,7 @@ from .decompiler import decompile_binary
 
 
 @click.command()
-@click.argument("binary", type=click.Path(exists=True, path_type=Path))
+@click.argument("binary", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(
     "-o", "--output",
     type=click.Path(path_type=Path),

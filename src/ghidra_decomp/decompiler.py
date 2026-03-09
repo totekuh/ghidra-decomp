@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 
 import click
@@ -53,6 +54,8 @@ def decompile_binary(
     else:
         pyghidra.start()
 
+    project_dir = binary.parent / f"{binary.stem}_ghidra"
+
     with pyghidra.open_program(str(binary)) as flat_api:
         program = flat_api.getCurrentProgram()
 
@@ -60,6 +63,10 @@ def decompile_binary(
             _rebase_program(program, base_addr)
 
         _export_all(program, output, timeout)
+
+    # Clean up Ghidra project cache so runs are always atomic
+    if project_dir.is_dir():
+        shutil.rmtree(project_dir)
 
 
 def _rebase_program(program, base_addr: str) -> None:
@@ -177,10 +184,9 @@ def _export_all(program, output: Path, timeout: int) -> None:
     types_content = _extract_types(program)
     (output / "types.h").write_text(types_content, encoding="utf-8")
 
-    # ---- Function prototypes ----
+    # ---- Function index ----
     click.echo("Writing function index...")
-    protos_content = _extract_prototypes(functions, program)
-    (output / "functions.h").write_text(protos_content, encoding="utf-8")
+    func_index = _extract_functions(functions)
 
     # ---- Sections ----
     click.echo("Extracting sections...")
@@ -201,6 +207,7 @@ def _export_all(program, output: Path, timeout: int) -> None:
     }
 
     # ---- Write JSON files ----
+    _write_json(output / "functions.json", func_index)
     _write_json(output / "callgraph.json", callgraph)
     _write_json(output / "strings.json", strings)
     _write_json(output / "imports.json", imports)
@@ -462,32 +469,32 @@ def _extract_types(program) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _extract_prototypes(functions, program) -> str:
-    """Generate a C header with all function prototypes."""
-    lines = [
-        "// Auto-generated function prototypes",
-        f"// Binary: {program.getExecutablePath()}",
-        f"// Total functions: {len(functions)}",
-        "",
-        "#pragma once",
-        "",
-    ]
-
+def _extract_functions(functions) -> list[dict]:
+    """Extract function index with address ranges and signatures."""
+    result = []
     for func in functions:
-        addr = func.getEntryPoint().toString()
-        name = func.getName()
+        entry = func.getEntryPoint()
+        body = func.getBody()
+        size = body.getNumAddresses()
         ret_type = func.getReturnType().getName() if func.getReturnType() else "void"
 
         params = []
         for p in func.getParameters():
             dt = p.getDataType().getName() if p.getDataType() else "undefined"
             pname = p.getName() or f"param_{p.getOrdinal()}"
-            params.append(f"{dt} {pname}")
+            params.append({"type": dt, "name": pname})
 
-        param_str = ", ".join(params) if params else "void"
-        lines.append(f"{ret_type} {name}({param_str}); // {addr}")
-
-    return "\n".join(lines) + "\n"
+        result.append({
+            "name": func.getName(),
+            "address": entry.toString(),
+            "end_address": body.getMaxAddress().toString(),
+            "size": size,
+            "return_type": ret_type,
+            "params": params,
+            "calling_convention": func.getCallingConventionName() or "unknown",
+            "is_thunk": func.isThunk(),
+        })
+    return result
 
 
 def _extract_sections(program) -> list[dict]:

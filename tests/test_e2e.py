@@ -37,7 +37,7 @@ def decomp_output_rebased(tmp_path_factory):
     """Run ghidra-decomp with --base-addr and return the output directory."""
     out = tmp_path_factory.mktemp("decomp_rebased")
     result = subprocess.run(
-        [sys.executable, "-m", "ghidra_decomp.cli", str(SAMPLE_BIN), "-o", str(out), "--base-addr", "0x10000000"],
+        [sys.executable, "-m", "ghidra_decomp.cli", str(SAMPLE_BIN), "-o", str(out), "--base-addr", "0xdead0000"],
         capture_output=True,
         text=True,
         timeout=300,
@@ -64,11 +64,8 @@ class TestOutputStructure:
     def test_types_header(self, decomp_output):
         assert (decomp_output / "types.h").is_file()
 
-    def test_functions_header(self, decomp_output):
-        assert (decomp_output / "functions.h").is_file()
-
     @pytest.mark.parametrize("name", [
-        "callgraph.json", "strings.json", "imports.json",
+        "functions.json", "callgraph.json", "strings.json", "imports.json",
         "exports.json", "symbols.json", "sections.json", "metadata.json",
     ])
     def test_json_files_exist_and_valid(self, decomp_output, name):
@@ -100,11 +97,19 @@ class TestFunctions:
         for func_name in KNOWN_FUNCTIONS:
             assert func_name in content, f"'{func_name}' not found in all_functions.c"
 
-    def test_functions_header_has_prototypes(self, decomp_output):
-        content = (decomp_output / "functions.h").read_text()
-        assert "#pragma once" in content
+    def test_functions_json_has_known(self, decomp_output):
+        funcs = json.loads((decomp_output / "functions.json").read_text())
+        names = {f["name"] for f in funcs}
         for func_name in KNOWN_FUNCTIONS:
-            assert func_name in content, f"'{func_name}' not in functions.h"
+            assert func_name in names, f"'{func_name}' not in functions.json"
+
+    def test_functions_json_has_address_ranges(self, decomp_output):
+        funcs = json.loads((decomp_output / "functions.json").read_text())
+        for f in funcs:
+            assert "address" in f
+            assert "end_address" in f
+            assert "size" in f
+            assert f["size"] > 0
 
 
 # ---- Call graph tests ----
@@ -230,12 +235,12 @@ class TestMetadata:
 class TestRebase:
     def test_rebase_logged(self, decomp_output_rebased):
         _, stdout = decomp_output_rebased
-        assert "0x10000000" in stdout or "10000000" in stdout
+        assert "0xdead0000" in stdout or "dead0000" in stdout
 
     def test_rebase_metadata(self, decomp_output_rebased):
         out, _ = decomp_output_rebased
         meta = json.loads((out / "metadata.json").read_text())
-        assert "10000000" in meta["image_base"]
+        assert "dead0000" in meta["image_base"]
 
     def test_rebased_addresses_differ(self, decomp_output, decomp_output_rebased):
         out_rebased, _ = decomp_output_rebased
@@ -247,7 +252,6 @@ class TestRebase:
         out_rebased, _ = decomp_output_rebased
         cg_default = json.loads((decomp_output / "callgraph.json").read_text())
         cg_rebased = json.loads((out_rebased / "callgraph.json").read_text())
-        # Addresses should be different
         default_addrs = set(cg_default.keys())
         rebased_addrs = set(cg_rebased.keys())
         assert default_addrs != rebased_addrs, "Rebased addresses should differ from defaults"

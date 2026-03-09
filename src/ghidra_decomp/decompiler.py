@@ -43,6 +43,7 @@ def decompile_binary(
     *,
     timeout: int = 60,
     ghidra_path: Path | None = None,
+    base_addr: str | None = None,
 ) -> None:
     """Decompile a binary and write structured output."""
     import pyghidra
@@ -54,7 +55,27 @@ def decompile_binary(
 
     with pyghidra.open_program(str(binary)) as flat_api:
         program = flat_api.getCurrentProgram()
+
+        if base_addr is not None:
+            _rebase_program(program, base_addr)
+
         _export_all(program, output, timeout)
+
+
+def _rebase_program(program, base_addr: str) -> None:
+    """Rebase the program to a new image base address."""
+    addr_value = int(base_addr, 0)  # supports 0x hex, decimal, 0o octal
+    addr_space = program.getAddressFactory().getDefaultAddressSpace()
+    new_base = addr_space.getAddress(addr_value)
+
+    old_base = program.getImageBase()
+    click.echo(f"Rebasing: {old_base} -> {new_base}")
+
+    tid = program.startTransaction("Rebase image")
+    try:
+        program.setImageBase(new_base, True)
+    finally:
+        program.endTransaction(tid, True)
 
 
 def _export_all(program, output: Path, timeout: int) -> None:
@@ -173,6 +194,7 @@ def _export_all(program, output: Path, timeout: int) -> None:
         "architecture": lang.getProcessor().toString(),
         "endian": lang.isBigEndian() and "big" or "little",
         "address_size": lang.getDefaultSpace().getSize(),
+        "image_base": program.getImageBase().toString(),
         "num_functions": total,
         "num_failed": len(failed),
         "failed_functions": failed,

@@ -181,8 +181,7 @@ def _export_all(program, output: Path, timeout: int) -> None:
 
     # ---- Types ----
     click.echo("Extracting types...")
-    types_content = _extract_types(program)
-    (output / "types.h").write_text(types_content, encoding="utf-8")
+    types = _extract_types(program)
 
     # ---- Function index ----
     click.echo("Writing function index...")
@@ -207,6 +206,7 @@ def _export_all(program, output: Path, timeout: int) -> None:
     }
 
     # ---- Write JSON files ----
+    _write_json(output / "types.json", types)
     _write_json(output / "functions.json", func_index)
     _write_json(output / "callgraph.json", callgraph)
     _write_json(output / "strings.json", strings)
@@ -342,14 +342,9 @@ def _extract_symbols(program) -> list[dict]:
     return symbols
 
 
-def _extract_types(program) -> str:
-    """Extract all recovered types (structs, enums, typedefs) as a C header."""
+def _extract_types(program) -> list[dict]:
+    """Extract all recovered types (structs, enums, typedefs, unions, function pointers)."""
     dtm = program.getDataTypeManager()
-    lines = [
-        "// Auto-generated type definitions recovered by Ghidra",
-        f"// Binary: {program.getExecutablePath()}",
-        "",
-    ]
 
     from ghidra.program.model.data import (
         Structure,
@@ -359,114 +354,81 @@ def _extract_types(program) -> str:
         FunctionDefinition,
     )
 
-    # Collect types by category for organized output
-    structs = []
-    unions = []
-    enums = []
-    typedefs = []
-    func_defs = []
+    BUILTIN = {
+        "byte", "word", "dword", "qword", "void", "bool",
+        "char", "short", "int", "long", "float", "double",
+        "uchar", "ushort", "uint", "ulong",
+        "undefined", "undefined1", "undefined2", "undefined4", "undefined8",
+        "pointer", "string",
+    }
+
+    result = []
 
     for dt in dtm.getAllDataTypes():
-        # Skip built-in types
-        path = dt.getCategoryPath().getPath()
-        if path.startswith("/") and dt.getName() in (
-            "byte", "word", "dword", "qword", "void", "bool",
-            "char", "short", "int", "long", "float", "double",
-            "uchar", "ushort", "uint", "ulong",
-            "undefined", "undefined1", "undefined2", "undefined4", "undefined8",
-            "pointer", "string",
-        ):
+        if dt.getName() in BUILTIN:
             continue
 
         if isinstance(dt, Structure):
-            structs.append(dt)
+            fields = []
+            for comp in dt.getComponents():
+                fields.append({
+                    "name": comp.getFieldName() or f"field_0x{comp.getOffset():x}",
+                    "type": comp.getDataType().getName(),
+                    "offset": comp.getOffset(),
+                    "size": comp.getLength(),
+                })
+            result.append({
+                "kind": "struct",
+                "name": dt.getName(),
+                "size": dt.getLength(),
+                "fields": fields,
+            })
+
         elif isinstance(dt, Union):
-            unions.append(dt)
+            fields = []
+            for comp in dt.getComponents():
+                fields.append({
+                    "name": comp.getFieldName() or f"field_{comp.getOrdinal()}",
+                    "type": comp.getDataType().getName(),
+                    "size": comp.getLength(),
+                })
+            result.append({
+                "kind": "union",
+                "name": dt.getName(),
+                "size": dt.getLength(),
+                "fields": fields,
+            })
+
         elif isinstance(dt, Enum):
-            enums.append(dt)
+            members = {}
+            for name in dt.getNames():
+                members[name] = dt.getValue(name)
+            result.append({
+                "kind": "enum",
+                "name": dt.getName(),
+                "size": dt.getLength(),
+                "members": members,
+            })
+
         elif isinstance(dt, TypeDef):
-            typedefs.append(dt)
+            result.append({
+                "kind": "typedef",
+                "name": dt.getName(),
+                "base_type": dt.getBaseDataType().getName(),
+            })
+
         elif isinstance(dt, FunctionDefinition):
-            func_defs.append(dt)
-
-    # Enums
-    if enums:
-        lines.append("// " + "=" * 70)
-        lines.append("// ENUMS")
-        lines.append("// " + "=" * 70)
-        lines.append("")
-        for e in sorted(enums, key=lambda x: x.getName()):
-            lines.append(f"typedef enum {e.getName()} {{")
-            for name in e.getNames():
-                val = e.getValue(name)
-                lines.append(f"    {name} = {val},")
-            lines.append(f"}} {e.getName()};")
-            lines.append("")
-
-    # Typedefs
-    if typedefs:
-        lines.append("// " + "=" * 70)
-        lines.append("// TYPEDEFS")
-        lines.append("// " + "=" * 70)
-        lines.append("")
-        for td in sorted(typedefs, key=lambda x: x.getName()):
-            base = td.getBaseDataType()
-            lines.append(f"typedef {base.getName()} {td.getName()};")
-        lines.append("")
-
-    # Structs
-    if structs:
-        lines.append("// " + "=" * 70)
-        lines.append("// STRUCTS")
-        lines.append("// " + "=" * 70)
-        lines.append("")
-        for s in sorted(structs, key=lambda x: x.getName()):
-            size = s.getLength()
-            lines.append(f"struct {s.getName()} {{ // size: 0x{size:x}")
-            for comp in s.getComponents():
-                offset = comp.getOffset()
-                dt_name = comp.getDataType().getName()
-                fname = comp.getFieldName() or f"field_0x{offset:x}"
-                comp_size = comp.getLength()
-                lines.append(
-                    f"    {dt_name} {fname}; "
-                    f"// offset: 0x{offset:x}, size: 0x{comp_size:x}"
-                )
-            lines.append("};")
-            lines.append("")
-
-    # Unions
-    if unions:
-        lines.append("// " + "=" * 70)
-        lines.append("// UNIONS")
-        lines.append("// " + "=" * 70)
-        lines.append("")
-        for u in sorted(unions, key=lambda x: x.getName()):
-            size = u.getLength()
-            lines.append(f"union {u.getName()} {{ // size: 0x{size:x}")
-            for comp in u.getComponents():
-                dt_name = comp.getDataType().getName()
-                fname = comp.getFieldName() or f"field_{comp.getOrdinal()}"
-                lines.append(f"    {dt_name} {fname};")
-            lines.append("};")
-            lines.append("")
-
-    # Function pointer types
-    if func_defs:
-        lines.append("// " + "=" * 70)
-        lines.append("// FUNCTION POINTER TYPES")
-        lines.append("// " + "=" * 70)
-        lines.append("")
-        for fd in sorted(func_defs, key=lambda x: x.getName()):
-            ret = fd.getReturnType().getName()
             params = []
-            for arg in fd.getArguments():
-                params.append(f"{arg.getDataType().getName()} {arg.getName()}")
-            param_str = ", ".join(params) if params else "void"
-            lines.append(f"typedef {ret} (*{fd.getName()})({param_str});")
-        lines.append("")
+            for arg in dt.getArguments():
+                params.append({"type": arg.getDataType().getName(), "name": arg.getName()})
+            result.append({
+                "kind": "function_pointer",
+                "name": dt.getName(),
+                "return_type": dt.getReturnType().getName(),
+                "params": params,
+            })
 
-    return "\n".join(lines) + "\n"
+    return result
 
 
 def _extract_functions(functions) -> list[dict]:

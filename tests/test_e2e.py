@@ -61,11 +61,8 @@ class TestOutputStructure:
         content = (decomp_output / "all_functions.c").read_text()
         assert len(content) > 0
 
-    def test_types_header(self, decomp_output):
-        assert (decomp_output / "types.h").is_file()
-
     @pytest.mark.parametrize("name", [
-        "functions.json", "callgraph.json", "strings.json", "imports.json",
+        "types.json", "functions.json", "callgraph.json", "strings.json", "imports.json",
         "exports.json", "symbols.json", "sections.json", "metadata.json",
     ])
     def test_json_files_exist_and_valid(self, decomp_output, name):

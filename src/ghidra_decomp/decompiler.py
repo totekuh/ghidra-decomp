@@ -33,7 +33,9 @@ def _func_header_comment(func) -> str:
         f"// Params:   {param_count}",
     ]
     if is_thunk:
-        lines.append(f"// Thunk:    -> {func.getThunkedFunction(True).getName()}")
+        thunked = func.getThunkedFunction(True)
+        thunk_name = thunked.getName() if thunked else "unknown"
+        lines.append(f"// Thunk:    -> {thunk_name}")
     lines.append("")
     return "\n".join(lines)
 
@@ -47,17 +49,33 @@ def decompile_binary(
     base_addr: str | None = None,
 ) -> None:
     """Decompile a binary and write structured output."""
-    import pyghidra
+    try:
+        import pyghidra
+    except ImportError:
+        raise click.ClickException(
+            "pyghidra is not installed. Install it with: pip install pyghidra\n"
+            "pyghidra is bundled with Ghidra 11+."
+        )
 
-    if ghidra_path:
-        pyghidra.start(install_dir=str(ghidra_path))
-    else:
-        pyghidra.start()
-
-    project_dir = binary.parent / f"{binary.stem}_ghidra"
+    if not pyghidra.started():
+        if ghidra_path:
+            install_dir = str(ghidra_path)
+        else:
+            install_dir = None
+        try:
+            pyghidra.start(install_dir=install_dir) if install_dir else pyghidra.start()
+        except Exception as e:
+            hint = ""
+            if not ghidra_path:
+                hint = "\nSet GHIDRA_INSTALL_DIR or pass --ghidra-path to your Ghidra installation."
+            raise click.ClickException(f"Failed to start Ghidra: {e}{hint}")
 
     with pyghidra.open_program(str(binary)) as flat_api:
         program = flat_api.getCurrentProgram()
+
+        # Grab the project directory so we can clean it up after closing
+        project_loc = program.getDomainFile().getProjectLocator()
+        project_dir = Path(str(project_loc.getProjectDir())) if project_loc else None
 
         if base_addr is not None:
             _rebase_program(program, base_addr)
@@ -65,24 +83,54 @@ def decompile_binary(
         _export_all(program, output, timeout)
 
     # Clean up Ghidra project cache so runs are always atomic
-    if project_dir.is_dir():
-        shutil.rmtree(project_dir)
+    if project_dir and project_dir.is_dir():
+        try:
+            shutil.rmtree(project_dir)
+        except OSError as e:
+            click.echo(f"Warning: could not clean up Ghidra cache: {e}", err=True)
+    # Also clean siblings (.gpr file, or .rep directory)
+    if project_dir:
+        if project_dir.name.endswith(".rep"):
+            # Clean the .gpr project file
+            gpr_file = project_dir.parent / (project_dir.name[:-4] + ".gpr")
+            if gpr_file.is_file():
+                try:
+                    gpr_file.unlink()
+                except OSError:
+                    pass
+        else:
+            # Clean the .rep repository directory
+            rep_dir = project_dir.parent / (project_dir.name + ".rep")
+            if rep_dir.is_dir() and rep_dir != project_dir:
+                try:
+                    shutil.rmtree(rep_dir)
+                except OSError:
+                    pass
 
 
 def _rebase_program(program, base_addr: str) -> None:
     """Rebase the program to a new image base address."""
-    addr_value = int(base_addr, 0)  # supports 0x hex, decimal, 0o octal
+    try:
+        addr_value = int(base_addr, 0)  # supports 0x hex, decimal, 0o octal
+    except ValueError:
+        raise click.BadParameter(
+            f"Invalid base address: {base_addr!r}. "
+            "Use hex (0x80000000), decimal, or octal (0o...) format.",
+            param_hint="'--base-addr'",
+        )
     addr_space = program.getAddressFactory().getDefaultAddressSpace()
     new_base = addr_space.getAddress(addr_value)
 
     old_base = program.getImageBase()
     click.echo(f"Rebasing: {old_base} -> {new_base}")
 
+    success = False
     tid = program.startTransaction("Rebase image")
     try:
         program.setImageBase(new_base, True)
+        success = True
     finally:
-        program.endTransaction(tid, True)
+        program.endTransaction(tid, success)
 
 
 def _export_all(program, output: Path, timeout: int) -> None:
@@ -97,68 +145,137 @@ def _export_all(program, output: Path, timeout: int) -> None:
     decomp.openProgram(program)
 
     func_dir = output / "functions"
+    if func_dir.exists():
+        shutil.rmtree(func_dir)
     func_dir.mkdir(parents=True, exist_ok=True)
 
     fm = program.getFunctionManager()
+    total = fm.getFunctionCount()
     functions = list(fm.getFunctions(True))
-    total = len(functions)
 
     click.echo(f"Functions: {total}")
 
     # ---- Decompile all functions ----
     callgraph: dict[str, dict] = {}
-    failed = []
-    all_chunks: list[str] = []  # for combined file
+    failed: list[tuple] = []  # (func, key, filename) for retry
+    results_map: dict[
+        str, str | None
+    ] = {}  # key -> content, preserves order for combined file
 
-    with click.progressbar(functions, label="Decompiling", show_pos=True) as bar:
-        for func in bar:
-            addr = func.getEntryPoint().toString()
-            name = func.getName()
-            key = f"{addr}_{name}"
-            safe_name = _sanitize_name(name)
-            filename = f"{addr}_{safe_name}.c"
+    try:
+        with click.progressbar(functions, label="Decompiling", show_pos=True) as bar:
+            for func in bar:
+                addr = func.getEntryPoint().toString()
+                name = func.getName()
+                key = f"{addr}_{name}"
+                safe_name = _sanitize_name(name)
+                filename = f"{addr}_{safe_name}.c"
 
-            header = _func_header_comment(func)
+                try:
+                    header = _func_header_comment(func)
 
-            # Decompile
-            results = decomp.decompileFunction(func, timeout, monitor)
-            if results.decompileCompleted():
-                c_code = results.getDecompiledFunction().getC()
-                content = header + c_code
-                (func_dir / filename).write_text(content, encoding="utf-8")
-                all_chunks.append(content)
-            else:
-                failed.append(key)
-                error_msg = results.getErrorMessage() or "unknown error"
-                content = header + f"// DECOMPILATION FAILED: {error_msg}\n"
-                (func_dir / filename).write_text(content, encoding="utf-8")
-                all_chunks.append(content)
+                    # Decompile
+                    result = decomp.decompileFunction(func, timeout, monitor)
+                    if result and result.decompileCompleted():
+                        decomp_func = result.getDecompiledFunction()
+                        c_code = decomp_func.getC() if decomp_func else None
+                        if c_code is not None:
+                            content = header + c_code
+                            (func_dir / filename).write_text(content, encoding="utf-8")
+                            results_map[key] = content
+                        else:
+                            failed.append((func, key, filename))
+                            results_map[key] = None
+                    else:
+                        failed.append((func, key, filename))
+                        results_map[key] = None
+                except Exception as e:
+                    click.echo(
+                        f"\nWarning: error decompiling {name} at {addr}: {e}", err=True
+                    )
+                    results_map[key] = None
+                    if (func, key, filename) not in failed:
+                        failed.append((func, key, filename))
 
-            # Call graph entry
-            called_funcs = []
-            for called in func.getCalledFunctions(None):
-                called_funcs.append({
-                    "address": called.getEntryPoint().toString(),
-                    "name": called.getName(),
-                })
+                # Call graph entry (independent of decompilation success)
+                try:
+                    called_funcs = []
+                    for called in func.getCalledFunctions(None):
+                        called_funcs.append(
+                            {
+                                "address": called.getEntryPoint().toString(),
+                                "name": called.getName(),
+                            }
+                        )
 
-            calling_funcs = []
-            for caller in func.getCallingFunctions(None):
-                calling_funcs.append({
-                    "address": caller.getEntryPoint().toString(),
-                    "name": caller.getName(),
-                })
+                    calling_funcs = []
+                    for caller in func.getCallingFunctions(None):
+                        calling_funcs.append(
+                            {
+                                "address": caller.getEntryPoint().toString(),
+                                "name": caller.getName(),
+                            }
+                        )
 
-            callgraph[addr] = {
-                "name": name,
-                "address": addr,
-                "calls": called_funcs,
-                "called_by": calling_funcs,
-            }
+                    callgraph[addr] = {
+                        "name": name,
+                        "address": addr,
+                        "calls": called_funcs,
+                        "called_by": calling_funcs,
+                    }
+                except Exception as e:
+                    click.echo(
+                        f"\nWarning: error extracting call graph for {name} at {addr}: {e}",
+                        err=True,
+                    )
 
-    decomp.dispose()
+        # ---- Retry failed functions with escalated timeout ----
+        if failed:
+            retry_timeout = timeout * 3
+            click.echo(
+                f"Retrying {len(failed)} failed functions "
+                f"with {retry_timeout}s timeout..."
+            )
+            still_failed = []
+            with click.progressbar(failed, label="Retrying", show_pos=True) as bar:
+                for func, key, filename in bar:
+                    try:
+                        header = _func_header_comment(func)
+                        result = decomp.decompileFunction(func, retry_timeout, monitor)
+                        decomp_func = (
+                            result.getDecompiledFunction()
+                            if result and result.decompileCompleted()
+                            else None
+                        )
+                        c_code = decomp_func.getC() if decomp_func else None
+                        if c_code is not None:
+                            content = header + c_code
+                        else:
+                            still_failed.append(key)
+                            error_msg = (
+                                result.getErrorMessage() if result else None
+                            ) or "unknown error"
+                            asm = _disassemble_function(program, func)
+                            content = (
+                                header + f"// DECOMPILATION FAILED: {error_msg}\n" + asm
+                            )
+                        (func_dir / filename).write_text(content, encoding="utf-8")
+                        results_map[key] = content
+                    except Exception as e:
+                        click.echo(f"\nWarning: error retrying {key}: {e}", err=True)
+                        still_failed.append(key)
+                        # Write a minimal fallback file
+                        fallback = (
+                            f"// DECOMPILATION FAILED: exception during retry: {e}\n"
+                        )
+                        (func_dir / filename).write_text(fallback, encoding="utf-8")
+                        results_map[key] = fallback
+            failed = still_failed
+    finally:
+        decomp.dispose()
 
     # ---- Combined file ----
+    all_chunks = [c for c in results_map.values() if c is not None]
     combined = output / "all_functions.c"
     separator = "\n" + ("/" * 80) + "\n\n"
     combined.write_text(separator.join(all_chunks), encoding="utf-8")
@@ -226,6 +343,21 @@ def _export_all(program, output: Path, timeout: int) -> None:
     )
 
 
+def _disassemble_function(program, func) -> str:
+    """Return the assembly listing for a function as commented C lines."""
+    listing = program.getListing()
+    lines = ["// Assembly listing:\n"]
+    for instr in listing.getInstructions(func.getBody(), True):
+        addr = instr.getAddress()
+        mnemonic = instr.getMnemonicString()
+        num_ops = instr.getNumOperands()
+        operands = ", ".join(
+            instr.getDefaultOperandRepresentation(i) for i in range(num_ops)
+        )
+        lines.append(f"//   {addr}  {mnemonic}  {operands}\n")
+    return "".join(lines)
+
+
 def _extract_strings(program) -> list[dict]:
     """Extract all defined strings with their xrefs."""
     from ghidra.program.model.data import StringDataType
@@ -257,18 +389,24 @@ def _extract_strings(program) -> list[dict]:
         for ref in ref_manager.getReferencesTo(addr):
             from_addr = ref.getFromAddress()
             func = fm.getFunctionContaining(from_addr)
-            xrefs.append({
-                "from_address": from_addr.toString(),
-                "function": func.getName() if func else None,
-                "function_address": func.getEntryPoint().toString() if func else None,
-            })
+            xrefs.append(
+                {
+                    "from_address": from_addr.toString(),
+                    "function": func.getName() if func else None,
+                    "function_address": func.getEntryPoint().toString()
+                    if func
+                    else None,
+                }
+            )
 
-        strings.append({
-            "address": addr.toString(),
-            "value": value,
-            "length": data.getLength(),
-            "xrefs": xrefs,
-        })
+        strings.append(
+            {
+                "address": addr.toString(),
+                "value": value,
+                "length": data.getLength(),
+                "xrefs": xrefs,
+            }
+        )
 
     return strings
 
@@ -276,16 +414,17 @@ def _extract_strings(program) -> list[dict]:
 def _extract_imports(program) -> list[dict]:
     """Extract imported (external) functions."""
     fm = program.getFunctionManager()
-    symbol_table = program.getSymbolTable()
     imports = []
 
     for func in fm.getExternalFunctions():
         ext_loc = func.getExternalLocation()
-        imports.append({
-            "name": func.getName(),
-            "library": ext_loc.getLibraryName() if ext_loc else None,
-            "address": func.getEntryPoint().toString(),
-        })
+        imports.append(
+            {
+                "name": func.getName(),
+                "library": ext_loc.getLibraryName() if ext_loc else None,
+                "address": func.getEntryPoint().toString(),
+            }
+        )
 
     return imports
 
@@ -297,10 +436,12 @@ def _extract_exports(program) -> list[dict]:
 
     for symbol in symbol_table.getAllSymbols(True):
         if symbol.isExternalEntryPoint():
-            exports.append({
-                "name": symbol.getName(),
-                "address": symbol.getAddress().toString(),
-            })
+            exports.append(
+                {
+                    "name": symbol.getName(),
+                    "address": symbol.getAddress().toString(),
+                }
+            )
 
     return exports
 
@@ -355,11 +496,29 @@ def _extract_types(program) -> list[dict]:
     )
 
     BUILTIN = {
-        "byte", "word", "dword", "qword", "void", "bool",
-        "char", "short", "int", "long", "float", "double",
-        "uchar", "ushort", "uint", "ulong",
-        "undefined", "undefined1", "undefined2", "undefined4", "undefined8",
-        "pointer", "string",
+        "byte",
+        "word",
+        "dword",
+        "qword",
+        "void",
+        "bool",
+        "char",
+        "short",
+        "int",
+        "long",
+        "float",
+        "double",
+        "uchar",
+        "ushort",
+        "uint",
+        "ulong",
+        "undefined",
+        "undefined1",
+        "undefined2",
+        "undefined4",
+        "undefined8",
+        "pointer",
+        "string",
     }
 
     result = []
@@ -371,62 +530,80 @@ def _extract_types(program) -> list[dict]:
         if isinstance(dt, Structure):
             fields = []
             for comp in dt.getComponents():
-                fields.append({
-                    "name": comp.getFieldName() or f"field_0x{comp.getOffset():x}",
-                    "type": comp.getDataType().getName(),
-                    "offset": comp.getOffset(),
-                    "size": comp.getLength(),
-                })
-            result.append({
-                "kind": "struct",
-                "name": dt.getName(),
-                "size": dt.getLength(),
-                "fields": fields,
-            })
+                fields.append(
+                    {
+                        "name": comp.getFieldName() or f"field_0x{comp.getOffset():x}",
+                        "type": comp.getDataType().getName(),
+                        "offset": comp.getOffset(),
+                        "size": comp.getLength(),
+                    }
+                )
+            result.append(
+                {
+                    "kind": "struct",
+                    "name": dt.getName(),
+                    "size": dt.getLength(),
+                    "fields": fields,
+                }
+            )
 
         elif isinstance(dt, Union):
             fields = []
             for comp in dt.getComponents():
-                fields.append({
-                    "name": comp.getFieldName() or f"field_{comp.getOrdinal()}",
-                    "type": comp.getDataType().getName(),
-                    "size": comp.getLength(),
-                })
-            result.append({
-                "kind": "union",
-                "name": dt.getName(),
-                "size": dt.getLength(),
-                "fields": fields,
-            })
+                fields.append(
+                    {
+                        "name": comp.getFieldName() or f"field_{comp.getOrdinal()}",
+                        "type": comp.getDataType().getName(),
+                        "size": comp.getLength(),
+                    }
+                )
+            result.append(
+                {
+                    "kind": "union",
+                    "name": dt.getName(),
+                    "size": dt.getLength(),
+                    "fields": fields,
+                }
+            )
 
         elif isinstance(dt, Enum):
             members = {}
             for name in dt.getNames():
                 members[name] = dt.getValue(name)
-            result.append({
-                "kind": "enum",
-                "name": dt.getName(),
-                "size": dt.getLength(),
-                "members": members,
-            })
+            result.append(
+                {
+                    "kind": "enum",
+                    "name": dt.getName(),
+                    "size": dt.getLength(),
+                    "members": members,
+                }
+            )
 
         elif isinstance(dt, TypeDef):
-            result.append({
-                "kind": "typedef",
-                "name": dt.getName(),
-                "base_type": dt.getBaseDataType().getName(),
-            })
+            base = dt.getBaseDataType()
+            result.append(
+                {
+                    "kind": "typedef",
+                    "name": dt.getName(),
+                    "base_type": base.getName() if base else "unknown",
+                }
+            )
 
         elif isinstance(dt, FunctionDefinition):
             params = []
             for arg in dt.getArguments():
-                params.append({"type": arg.getDataType().getName(), "name": arg.getName()})
-            result.append({
-                "kind": "function_pointer",
-                "name": dt.getName(),
-                "return_type": dt.getReturnType().getName(),
-                "params": params,
-            })
+                params.append(
+                    {"type": arg.getDataType().getName(), "name": arg.getName()}
+                )
+            ret = dt.getReturnType()
+            result.append(
+                {
+                    "kind": "function_pointer",
+                    "name": dt.getName(),
+                    "return_type": ret.getName() if ret else "void",
+                    "params": params,
+                }
+            )
 
     return result
 
@@ -446,16 +623,18 @@ def _extract_functions(functions) -> list[dict]:
             pname = p.getName() or f"param_{p.getOrdinal()}"
             params.append({"type": dt, "name": pname})
 
-        result.append({
-            "name": func.getName(),
-            "address": entry.toString(),
-            "end_address": body.getMaxAddress().toString(),
-            "size": size,
-            "return_type": ret_type,
-            "params": params,
-            "calling_convention": func.getCallingConventionName() or "unknown",
-            "is_thunk": func.isThunk(),
-        })
+        result.append(
+            {
+                "name": func.getName(),
+                "address": entry.toString(),
+                "end_address": body.getMaxAddress().toString(),
+                "size": size,
+                "return_type": ret_type,
+                "params": params,
+                "calling_convention": func.getCallingConventionName() or "unknown",
+                "is_thunk": func.isThunk(),
+            }
+        )
     return result
 
 
@@ -465,19 +644,21 @@ def _extract_sections(program) -> list[dict]:
     sections = []
 
     for block in memory.getBlocks():
-        sections.append({
-            "name": block.getName(),
-            "start": block.getStart().toString(),
-            "end": block.getEnd().toString(),
-            "size": block.getSize(),
-            "readable": block.isRead(),
-            "writable": block.isWrite(),
-            "executable": block.isExecute(),
-            "volatile": block.isVolatile(),
-            "initialized": block.isInitialized(),
-            "type": block.getType().toString() if block.getType() else "DEFAULT",
-            "source": block.getSourceName(),
-        })
+        sections.append(
+            {
+                "name": block.getName(),
+                "start": block.getStart().toString(),
+                "end": block.getEnd().toString(),
+                "size": block.getSize(),
+                "readable": block.isRead(),
+                "writable": block.isWrite(),
+                "executable": block.isExecute(),
+                "volatile": block.isVolatile(),
+                "initialized": block.isInitialized(),
+                "type": block.getType().toString() if block.getType() else "DEFAULT",
+                "source": block.getSourceName(),
+            }
+        )
 
     return sections
 

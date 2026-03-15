@@ -4,9 +4,24 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ghidra-decomp"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Bulk-decompile binaries via Ghidra into a browsable source tree"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.10"
+authors = [{name = "totekuh", email = "totekuh@protonmail.com"}]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Disassemblers",
+]
 dependencies = [
     "pyghidra",
     "click",
@@ -15,5 +30,13 @@ dependencies = [
 [project.scripts]
 ghidra-decomp = "ghidra_decomp.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/totekuh/ghidra-decomp"
+Repository = "https://github.com/totekuh/ghidra-decomp"
+Issues = "https://github.com/totekuh/ghidra-decomp/issues"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/ghidra_decomp"]
+
+[tool.hatch.version]
+path = "src/ghidra_decomp/__init__.py"

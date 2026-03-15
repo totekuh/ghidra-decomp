@@ -1,0 +1,2 @@
+# Prevent Git from mangling binary test fixtures
+tests/fixtures/sample binary

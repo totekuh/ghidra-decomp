@@ -9,3 +9,7 @@ build/
 .claude/
 CLAUDE.md
 *_ghidra/
+.mypy_cache/
+.ruff_cache/
+*.so
+*.dylib

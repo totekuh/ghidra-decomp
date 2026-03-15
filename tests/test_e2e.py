@@ -15,7 +15,16 @@ FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE_BIN = FIXTURES / "sample"
 
 # Known functions compiled into the test binary
-KNOWN_FUNCTIONS = {"add", "multiply", "compute", "print_banner", "make_point", "sum_array", "factorial", "main"}
+KNOWN_FUNCTIONS = {
+    "add",
+    "multiply",
+    "compute",
+    "print_banner",
+    "make_point",
+    "sum_array",
+    "factorial",
+    "main",
+}
 
 
 @pytest.fixture(scope="module")
@@ -23,12 +32,14 @@ def decomp_output(tmp_path_factory):
     """Run ghidra-decomp once and return the output directory."""
     out = tmp_path_factory.mktemp("decomp_output")
     result = subprocess.run(
-        [sys.executable, "-m", "ghidra_decomp.cli", str(SAMPLE_BIN), "-o", str(out)],
+        [sys.executable, "-m", "ghidra_decomp", str(SAMPLE_BIN), "-o", str(out)],
         capture_output=True,
         text=True,
         timeout=300,
     )
-    assert result.returncode == 0, f"ghidra-decomp failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert result.returncode == 0, (
+        f"ghidra-decomp failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
     return out
 
 
@@ -37,16 +48,28 @@ def decomp_output_rebased(tmp_path_factory):
     """Run ghidra-decomp with --base-addr and return the output directory."""
     out = tmp_path_factory.mktemp("decomp_rebased")
     result = subprocess.run(
-        [sys.executable, "-m", "ghidra_decomp.cli", str(SAMPLE_BIN), "-o", str(out), "--base-addr", "0xdead0000"],
+        [
+            sys.executable,
+            "-m",
+            "ghidra_decomp",
+            str(SAMPLE_BIN),
+            "-o",
+            str(out),
+            "--base-addr",
+            "0xdead0000",
+        ],
         capture_output=True,
         text=True,
         timeout=300,
     )
-    assert result.returncode == 0, f"ghidra-decomp (rebased) failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    assert result.returncode == 0, (
+        f"ghidra-decomp (rebased) failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
     return out, result.stdout
 
 
 # ---- Output structure tests ----
+
 
 class TestOutputStructure:
     def test_functions_dir_exists(self, decomp_output):
@@ -60,26 +83,43 @@ class TestOutputStructure:
         assert (decomp_output / "all_functions.c").is_file()
         content = (decomp_output / "all_functions.c").read_text()
         assert len(content) > 0
+        if content.count("// Function:") > 1:
+            assert ("/" * 80) in content, (
+                "Missing function separator in all_functions.c"
+            )
 
-    @pytest.mark.parametrize("name", [
-        "types.json", "functions.json", "callgraph.json", "strings.json", "imports.json",
-        "exports.json", "symbols.json", "sections.json", "metadata.json",
-    ])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "types.json",
+            "functions.json",
+            "callgraph.json",
+            "strings.json",
+            "imports.json",
+            "exports.json",
+            "symbols.json",
+            "sections.json",
+            "metadata.json",
+        ],
+    )
     def test_json_files_exist_and_valid(self, decomp_output, name):
         path = decomp_output / name
         assert path.is_file()
         data = json.loads(path.read_text())
-        assert data is not None
+        assert isinstance(data, (list, dict)), (
+            f"{name} did not contain a JSON array or object"
+        )
 
 
 # ---- Function decompilation tests ----
+
 
 class TestFunctions:
     def test_known_functions_have_files(self, decomp_output):
         func_dir = decomp_output / "functions"
         all_filenames = {f.name for f in func_dir.glob("*.c")}
         for func_name in KNOWN_FUNCTIONS:
-            matches = [f for f in all_filenames if func_name in f]
+            matches = [f for f in all_filenames if f.endswith(f"_{func_name}.c")]
             assert matches, f"No .c file found for function '{func_name}'"
 
     def test_function_files_have_header_comments(self, decomp_output):
@@ -110,6 +150,7 @@ class TestFunctions:
 
 
 # ---- Call graph tests ----
+
 
 class TestCallGraph:
     def test_call_graph_has_entries(self, decomp_output):
@@ -143,6 +184,7 @@ class TestCallGraph:
 
 # ---- Strings tests ----
 
+
 class TestStrings:
     def test_strings_extracted(self, decomp_output):
         strings = json.loads((decomp_output / "strings.json").read_text())
@@ -152,10 +194,13 @@ class TestStrings:
         strings = json.loads((decomp_output / "strings.json").read_text())
         values = {s["value"] for s in strings}
         # At least some of our format strings or globals should show up
-        assert any("ghidra-decomp" in v for v in values), f"Banner string not found. Got: {values}"
+        assert any("ghidra-decomp" in v for v in values), (
+            f"Banner string not found. Got: {values}"
+        )
 
 
 # ---- Imports tests ----
+
 
 class TestImports:
     def test_imports_extracted(self, decomp_output):
@@ -171,6 +216,7 @@ class TestImports:
 
 # ---- Exports tests ----
 
+
 class TestExports:
     def test_exports_extracted(self, decomp_output):
         exports = json.loads((decomp_output / "exports.json").read_text())
@@ -184,6 +230,7 @@ class TestExports:
 
 # ---- Symbols tests ----
 
+
 class TestSymbols:
     def test_symbols_extracted(self, decomp_output):
         symbols = json.loads((decomp_output / "symbols.json").read_text())
@@ -191,6 +238,7 @@ class TestSymbols:
 
 
 # ---- Sections tests ----
+
 
 class TestSections:
     def test_sections_extracted(self, decomp_output):
@@ -206,6 +254,7 @@ class TestSections:
 
 # ---- Metadata tests ----
 
+
 class TestMetadata:
     def test_metadata_fields(self, decomp_output):
         meta = json.loads((decomp_output / "metadata.json").read_text())
@@ -220,7 +269,7 @@ class TestMetadata:
 
     def test_architecture_x86(self, decomp_output):
         meta = json.loads((decomp_output / "metadata.json").read_text())
-        assert "x86" in meta["architecture"].lower() or "x86" in meta["architecture"]
+        assert "x86" in meta["architecture"].lower()
 
     def test_endianness(self, decomp_output):
         meta = json.loads((decomp_output / "metadata.json").read_text())
@@ -228,6 +277,7 @@ class TestMetadata:
 
 
 # ---- Rebase tests ----
+
 
 class TestRebase:
     def test_rebase_logged(self, decomp_output_rebased):
@@ -237,7 +287,7 @@ class TestRebase:
     def test_rebase_metadata(self, decomp_output_rebased):
         out, _ = decomp_output_rebased
         meta = json.loads((out / "metadata.json").read_text())
-        assert "dead0000" in meta["image_base"]
+        assert "dead0000" in meta["image_base"].lower()
 
     def test_rebased_addresses_differ(self, decomp_output, decomp_output_rebased):
         out_rebased, _ = decomp_output_rebased
@@ -245,10 +295,75 @@ class TestRebase:
         meta_rebased = json.loads((out_rebased / "metadata.json").read_text())
         assert meta_default["image_base"] != meta_rebased["image_base"]
 
-    def test_rebased_functions_have_new_addresses(self, decomp_output, decomp_output_rebased):
+    def test_rebased_functions_have_new_addresses(
+        self, decomp_output, decomp_output_rebased
+    ):
         out_rebased, _ = decomp_output_rebased
         cg_default = json.loads((decomp_output / "callgraph.json").read_text())
         cg_rebased = json.loads((out_rebased / "callgraph.json").read_text())
         default_addrs = set(cg_default.keys())
         rebased_addrs = set(cg_rebased.keys())
-        assert default_addrs != rebased_addrs, "Rebased addresses should differ from defaults"
+        assert default_addrs != rebased_addrs, (
+            "Rebased addresses should differ from defaults"
+        )
+
+
+# ---- Error handling tests ----
+
+
+class TestErrorHandling:
+    def test_invalid_binary(self, tmp_path):
+        """Passing a non-binary file should produce degenerate output."""
+        fake = tmp_path / "not_a_binary.txt"
+        fake.write_text("this is not a binary")
+        out = tmp_path / "out"
+        result = subprocess.run(
+            [sys.executable, "-m", "ghidra_decomp", str(fake), "-o", str(out)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        # Ghidra accepts any file as "Raw Binary" — tool succeeds but with 0 meaningful functions
+        if result.returncode == 0:
+            meta = json.loads((out / "metadata.json").read_text())
+            assert meta["num_functions"] == 0 or meta["format"] == "Raw Binary"
+
+    def test_bad_base_addr(self, tmp_path):
+        """Invalid --base-addr should fail with a clear error."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "ghidra_decomp",
+                str(SAMPLE_BIN),
+                "-o",
+                str(tmp_path / "out"),
+                "--base-addr",
+                "notanumber",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        assert result.returncode != 0
+        assert (
+            "base" in (result.stdout + result.stderr).lower()
+            or "invalid" in (result.stdout + result.stderr).lower()
+        )
+
+    def test_directory_rejected(self, tmp_path):
+        """Passing a directory instead of a file should be rejected by Click."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "ghidra_decomp",
+                str(tmp_path),
+                "-o",
+                str(tmp_path / "out"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode != 0

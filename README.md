@@ -31,6 +31,7 @@ Options:
 | `-o, --output` | Output directory | `<binary>_decomp/` |
 | `--timeout` | Per-function decompilation timeout (seconds) | 60 |
 | `--ghidra-path` | Path to Ghidra install | `$GHIDRA_INSTALL_DIR` |
+| `--base-addr` | Rebase binary to this address before export (e.g. `0x80000000`) | none |
 
 ## Output
 
@@ -41,11 +42,14 @@ firmware_decomp/
 │   ├── 00010234_parse_config.c
 │   └── ...
 ├── all_functions.c     # everything in one file
+├── types.json          # recovered structs, enums, unions, typedefs
+├── functions.json      # function index with address ranges + signatures
 ├── callgraph.json      # who calls who
 ├── strings.json        # strings + xrefs to functions
 ├── imports.json        # external library functions
 ├── exports.json        # exported entry points
 ├── symbols.json        # globals, labels, data
+├── sections.json       # memory map with r/w/x permissions
 └── metadata.json       # binary info + stats
 ```
 

@@ -82,7 +82,10 @@ def list_languages(*, ghidra_path: Path | None = None) -> None:
         processor = str(d.getProcessor())
         endian = str(d.getEndian())
         size = d.getSize()
-        cspecs = [str(c.getCompilerSpecID()) for c in d.getCompatibleCompilerSpecDescriptions()]
+        cspecs = [
+            str(c.getCompilerSpecID())
+            for c in d.getCompatibleCompilerSpecDescriptions()
+        ]
         click.echo(
             f"{lang_id}  [{processor} {endian} {size}]  cspec: {', '.join(cspecs) or '-'}"
         )

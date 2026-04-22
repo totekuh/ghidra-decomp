@@ -104,7 +104,7 @@ def decompile_binary(
     """Decompile a binary and write structured output."""
     pyghidra = _start_pyghidra(ghidra_path)
 
-    open_kwargs = {"analyze": False}
+    open_kwargs: dict[str, object] = {"analyze": False}
     if language is not None:
         open_kwargs["language"] = language
     if compiler is not None:

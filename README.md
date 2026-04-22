@@ -31,7 +31,28 @@ Options:
 | `-o, --output` | Output directory | `<binary>_decomp/` |
 | `--timeout` | Per-function decompilation timeout (seconds) | 60 |
 | `--ghidra-path` | Path to Ghidra install | `$GHIDRA_INSTALL_DIR` |
-| `--base-addr` | Rebase binary to this address before export (e.g. `0x80000000`) | none |
+| `--base-addr` | Rebase binary to this address before analysis (e.g. `0x80000000`) | none |
+| `--entry` | Mark this address as the entry point and disassemble from it before analysis (e.g. `0x31000`). Useful for raw binaries. | none |
+| `--language` | Force Ghidra language ID (e.g. `ARM:LE:32:v7`). Use when auto-detect fails. | auto |
+| `--compiler` | Force compiler spec ID (e.g. `gcc`, `default`, `windows`). Requires `--language`. | auto |
+| `--list-languages` | List all available language IDs and compiler specs, then exit. | |
+
+For raw binaries or unknown formats, Ghidra will refuse to auto-load. Discover the right spec then pass it:
+
+```bash
+ghidra-decomp --list-languages | grep -i arm
+ghidra-decomp ./firmware.bin --language ARM:LE:32:v7 --compiler default
+```
+
+Raw binaries typically also need a known image base and an entry point for auto-analysis to reach every function. Both are applied *before* analysis runs, so function boundaries, xrefs, and switch-table recovery all happen at the real addresses:
+
+```bash
+ghidra-decomp ./dal_ivm.mod \
+  --language x86:LE:32:default \
+  --compiler gcc \
+  --base-addr 0x00031000 \
+  --entry   0x00031000
+```
 
 ## Output
 

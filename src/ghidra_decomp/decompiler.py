@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from contextlib import ExitStack
 from pathlib import Path
 
 import click
@@ -40,15 +41,8 @@ def _func_header_comment(func) -> str:
     return "\n".join(lines)
 
 
-def decompile_binary(
-    binary: Path,
-    output: Path,
-    *,
-    timeout: int = 60,
-    ghidra_path: Path | None = None,
-    base_addr: str | None = None,
-) -> None:
-    """Decompile a binary and write structured output."""
+def _start_pyghidra(ghidra_path: Path | None):
+    """Import and start pyghidra, returning the module."""
     try:
         import pyghidra
     except ImportError:
@@ -58,19 +52,88 @@ def decompile_binary(
         )
 
     if not pyghidra.started():
-        if ghidra_path:
-            install_dir = str(ghidra_path)
-        else:
-            install_dir = None
+        install_dir = str(ghidra_path) if ghidra_path else None
         try:
             pyghidra.start(install_dir=install_dir) if install_dir else pyghidra.start()
         except Exception as e:
             hint = ""
             if not ghidra_path:
-                hint = "\nSet GHIDRA_INSTALL_DIR or pass --ghidra-path to your Ghidra installation."
+                hint = (
+                    "\nSet GHIDRA_INSTALL_DIR or pass --ghidra-path "
+                    "to your Ghidra installation."
+                )
             raise click.ClickException(f"Failed to start Ghidra: {e}{hint}")
 
-    with pyghidra.open_program(str(binary)) as flat_api:
+    return pyghidra
+
+
+def list_languages(*, ghidra_path: Path | None = None) -> None:
+    """Print all Ghidra language IDs with their available compiler specs."""
+    _start_pyghidra(ghidra_path)
+
+    from ghidra.program.util import DefaultLanguageService
+
+    svc = DefaultLanguageService.getLanguageService()
+    descs = list(svc.getLanguageDescriptions(False))
+    descs.sort(key=lambda d: str(d.getLanguageID()))
+
+    for d in descs:
+        lang_id = str(d.getLanguageID())
+        processor = str(d.getProcessor())
+        endian = str(d.getEndian())
+        size = d.getSize()
+        cspecs = [str(c.getCompilerSpecID()) for c in d.getCompatibleCompilerSpecDescriptions()]
+        click.echo(
+            f"{lang_id}  [{processor} {endian} {size}]  cspec: {', '.join(cspecs) or '-'}"
+        )
+
+    click.echo(f"\n{len(descs)} language(s).")
+
+
+def decompile_binary(
+    binary: Path,
+    output: Path,
+    *,
+    timeout: int = 60,
+    ghidra_path: Path | None = None,
+    base_addr: str | None = None,
+    language: str | None = None,
+    compiler: str | None = None,
+    entry: str | None = None,
+) -> None:
+    """Decompile a binary and write structured output."""
+    pyghidra = _start_pyghidra(ghidra_path)
+
+    open_kwargs = {"analyze": False}
+    if language is not None:
+        open_kwargs["language"] = language
+    if compiler is not None:
+        open_kwargs["compiler"] = compiler
+
+    stack = ExitStack()
+    try:
+        flat_api = stack.enter_context(
+            pyghidra.open_program(str(binary), **open_kwargs)
+        )
+    except Exception as e:
+        msg = str(e)
+        if "No load spec found" in msg:
+            hint = (
+                f"Ghidra could not identify {binary.name}. Likely a raw or unknown "
+                "format.\nPass --language (and optionally --compiler) to force a "
+                "spec. Run with --list-languages to discover IDs."
+            )
+        elif language is not None:
+            hint = (
+                f"Failed to load with --language {language}"
+                + (f" --compiler {compiler}" if compiler else "")
+                + f": {msg}"
+            )
+        else:
+            hint = f"Failed to open program: {msg}"
+        raise click.ClickException(hint)
+
+    with stack:
         program = flat_api.getCurrentProgram()
 
         # Grab the project directory so we can clean it up after closing
@@ -79,6 +142,11 @@ def decompile_binary(
 
         if base_addr is not None:
             _rebase_program(program, base_addr)
+
+        if entry is not None:
+            _mark_entry(program, flat_api, entry)
+
+        _run_analysis(program, flat_api)
 
         _export_all(program, output, timeout)
 
@@ -128,6 +196,44 @@ def _rebase_program(program, base_addr: str) -> None:
     tid = program.startTransaction("Rebase image")
     try:
         program.setImageBase(new_base, True)
+        success = True
+    finally:
+        program.endTransaction(tid, success)
+
+
+def _mark_entry(program, flat_api, entry: str) -> None:
+    """Disassemble from entry, create a function there, mark as program entry."""
+    try:
+        addr_value = int(entry, 0)
+    except ValueError:
+        raise click.BadParameter(
+            f"Invalid entry address: {entry!r}. "
+            "Use hex (0x31000), decimal, or octal (0o...) format.",
+            param_hint="'--entry'",
+        )
+    addr_space = program.getAddressFactory().getDefaultAddressSpace()
+    entry_addr = addr_space.getAddress(addr_value)
+    click.echo(f"Entry:   {entry_addr}")
+
+    success = False
+    tid = program.startTransaction("Mark entry point")
+    try:
+        program.getSymbolTable().addExternalEntryPoint(entry_addr)
+        flat_api.disassemble(entry_addr)
+        if flat_api.getFunctionAt(entry_addr) is None:
+            flat_api.createFunction(entry_addr, "entry")
+        success = True
+    finally:
+        program.endTransaction(tid, success)
+
+
+def _run_analysis(program, flat_api) -> None:
+    """Run Ghidra's auto-analysis on the program."""
+    click.echo("Running auto-analysis...")
+    success = False
+    tid = program.startTransaction("Auto-analysis")
+    try:
+        flat_api.analyzeAll(program)
         success = True
     finally:
         program.endTransaction(tid, success)

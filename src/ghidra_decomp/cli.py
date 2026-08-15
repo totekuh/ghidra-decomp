@@ -1,7 +1,8 @@
 """CLI entry point for ghidra-decomp."""
 
-import click
 from pathlib import Path
+
+import click
 
 from .decompiler import decompile_binary, list_languages
 
@@ -21,10 +22,16 @@ from .decompiler import decompile_binary, list_languages
 )
 @click.option(
     "--timeout",
-    type=int,
+    type=click.IntRange(min=1),
     default=60,
     show_default=True,
     help="Decompilation timeout per function (seconds).",
+)
+@click.option(
+    "--combined",
+    is_flag=True,
+    default=False,
+    help="Also emit all_functions.c containing every function.",
 )
 @click.option(
     "--ghidra-path",
@@ -71,6 +78,7 @@ def main(
     binary: Path | None,
     output: Path | None,
     timeout: int,
+    combined: bool,
     ghidra_path: Path | None,
     base_addr: str | None,
     entry: str | None,
@@ -114,6 +122,7 @@ def main(
         binary,
         output,
         timeout=timeout,
+        combined=combined,
         ghidra_path=ghidra_path,
         base_addr=base_addr,
         entry=entry,

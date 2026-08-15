@@ -32,10 +32,19 @@ def decomp_output(tmp_path_factory):
     """Run ghidra-decomp once and return the output directory."""
     out = tmp_path_factory.mktemp("decomp_output")
     result = subprocess.run(
-        [sys.executable, "-m", "ghidra_decomp", str(SAMPLE_BIN), "-o", str(out)],
+        [
+            sys.executable,
+            "-m",
+            "ghidra_decomp",
+            str(SAMPLE_BIN),
+            "-o",
+            str(out),
+            "--combined",
+        ],
         capture_output=True,
         text=True,
         timeout=300,
+        check=False,
     )
     assert result.returncode == 0, (
         f"ghidra-decomp failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -61,6 +70,7 @@ def decomp_output_rebased(tmp_path_factory):
         capture_output=True,
         text=True,
         timeout=300,
+        check=False,
     )
     assert result.returncode == 0, (
         f"ghidra-decomp (rebased) failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
@@ -78,6 +88,15 @@ class TestOutputStructure:
     def test_functions_dir_not_empty(self, decomp_output):
         c_files = list((decomp_output / "functions").glob("*.c"))
         assert len(c_files) > 0
+
+    def test_assembly_dir_not_empty(self, decomp_output):
+        assembly_files = list((decomp_output / "assembly").glob("*.s"))
+        assert len(assembly_files) > 0
+
+    def test_function_sidecars_exist(self, decomp_output):
+        c_files = list((decomp_output / "functions").glob("*.c"))
+        sidecars = list((decomp_output / "functions").glob("*.json"))
+        assert len(sidecars) == len(c_files)
 
     def test_all_functions_file(self, decomp_output):
         assert (decomp_output / "all_functions.c").is_file()
@@ -100,6 +119,7 @@ class TestOutputStructure:
             "symbols.json",
             "sections.json",
             "metadata.json",
+            "manifest.json",
         ],
     )
     def test_json_files_exist_and_valid(self, decomp_output, name):
@@ -109,6 +129,12 @@ class TestOutputStructure:
         assert isinstance(data, (list, dict)), (
             f"{name} did not contain a JSON array or object"
         )
+
+    def test_xrefs_jsonl_exists_and_is_valid(self, decomp_output):
+        path = decomp_output / "xrefs.jsonl"
+        assert path.is_file()
+        for line in path.read_text().splitlines():
+            assert isinstance(json.loads(line), dict)
 
 
 # ---- Function decompilation tests ----
@@ -146,7 +172,26 @@ class TestFunctions:
             assert "address" in f
             assert "end_address" in f
             assert "size" in f
+            assert "body_ranges" in f
+            assert "artifacts" in f
+            assert "decompilation" in f
             assert f["size"] > 0
+
+    def test_sidecars_match_function_index(self, decomp_output):
+        funcs = json.loads((decomp_output / "functions.json").read_text())
+        for func in funcs:
+            sidecar = decomp_output / func["artifacts"]["sidecar"]
+            data = json.loads(sidecar.read_text())
+            assert data["address"] == func["address"]
+            assert data["schema_version"] == 1
+
+    def test_assembly_has_addresses_and_bytes(self, decomp_output):
+        assembly_files = list((decomp_output / "assembly").glob("*.s"))
+        populated = [path.read_text() for path in assembly_files if path.read_text()]
+        assert populated
+        first_line = populated[0].splitlines()[0]
+        assert ":" in first_line
+        assert any(char.isdigit() for char in first_line.split(":", 1)[1])
 
 
 # ---- Call graph tests ----
@@ -161,7 +206,7 @@ class TestCallGraph:
         cg = json.loads((decomp_output / "callgraph.json").read_text())
         # Find the compute entry
         compute_entry = None
-        for addr, entry in cg.items():
+        for entry in cg.values():
             if entry["name"] == "compute":
                 compute_entry = entry
                 break
@@ -169,11 +214,12 @@ class TestCallGraph:
         called_names = {c["name"] for c in compute_entry["calls"]}
         assert "add" in called_names
         assert "multiply" in called_names
+        assert all("call_site" in call for call in compute_entry["calls"])
 
     def test_add_called_by_compute(self, decomp_output):
         cg = json.loads((decomp_output / "callgraph.json").read_text())
         add_entry = None
-        for addr, entry in cg.items():
+        for entry in cg.values():
             if entry["name"] == "add":
                 add_entry = entry
                 break
@@ -322,6 +368,7 @@ class TestErrorHandling:
             capture_output=True,
             text=True,
             timeout=300,
+            check=False,
         )
         # Ghidra accepts any file as "Raw Binary" — tool succeeds but with 0 meaningful functions
         if result.returncode == 0:
@@ -344,6 +391,7 @@ class TestErrorHandling:
             capture_output=True,
             text=True,
             timeout=300,
+            check=False,
         )
         assert result.returncode != 0
         assert (
@@ -365,5 +413,6 @@ class TestErrorHandling:
             capture_output=True,
             text=True,
             timeout=30,
+            check=False,
         )
         assert result.returncode != 0

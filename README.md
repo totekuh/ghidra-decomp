@@ -30,6 +30,7 @@ Options:
 |------|-------------|---------|
 | `-o, --output` | Output directory | `<binary>_decomp/` |
 | `--timeout` | Per-function decompilation timeout (seconds) | 60 |
+| `--combined` | Also emit `all_functions.c` | off |
 | `--ghidra-path` | Path to Ghidra install | `$GHIDRA_INSTALL_DIR` |
 | `--base-addr` | Rebase binary to this address before analysis (e.g. `0x80000000`) | none |
 | `--entry` | Mark this address as the entry point and disassemble from it before analysis (e.g. `0x31000`). Useful for raw binaries. | none |
@@ -58,11 +59,17 @@ ghidra-decomp ./dal_ivm.mod \
 
 ```
 firmware_decomp/
+├── manifest.json       # fingerprint, versions, completion status, artifact hashes
 ├── functions/
 │   ├── 00010000_main.c
+│   ├── 00010000_main.json
 │   ├── 00010234_parse_config.c
 │   └── ...
-├── all_functions.c     # everything in one file
+├── assembly/
+│   ├── 00010000_main.s
+│   └── ...
+├── xrefs.jsonl         # call-site-aware code and data references
+├── all_functions.c     # optional; enabled with --combined
 ├── types.json          # recovered structs, enums, unions, typedefs
 ├── functions.json      # function index with address ranges + signatures
 ├── callgraph.json      # who calls who
@@ -74,7 +81,10 @@ firmware_decomp/
 └── metadata.json       # binary info + stats
 ```
 
-Each `.c` file includes a metadata header:
+Each `.c` file includes a metadata header. Its adjacent JSON sidecar records body
+ranges, signature and variable storage, calls, references, related strings and
+globals, decompilation status, artifact paths, and hashes. Assembly files contain
+instruction addresses, raw bytes, mnemonics, and operands.
 
 ```c
 // Function: parse_config
@@ -88,11 +98,43 @@ void parse_config(char *param_1, int param_2, int param_3) {
 }
 ```
 
+`manifest.json` is the corpus completion marker. It fingerprints the input bytes and
+analysis configuration, records Ghidra/PyGhidra/tool versions, summarizes function
+statuses, and hashes every generated index. While an export is running,
+`.run-state.json` marks the corpus incomplete. The manifest is written atomically only
+after the required artifacts and indexes are durable.
+
+Each function receives at most the configured `--timeout`. A failed decompilation is
+recorded as `fallback`; its C artifact contains the error while its normal assembly
+artifact remains available for analysis.
+
 ## Intended workflow
 
 1. **Dump** the binary with `ghidra-decomp`
 2. **Analyze** the output like source code — grep, glob, read
 3. **Write back** renames/annotations to Ghidra via MCP (separate tool)
+
+## Development
+
+Fast checks:
+
+```bash
+ruff check src/ tests/
+ruff format --check src/ tests/
+mypy src/ghidra_decomp/ --ignore-missing-imports
+pytest tests/test_artifacts.py
+```
+
+The complete suite starts embedded Ghidra and decompiles both the repository fixture
+and the host's `true` executable:
+
+```bash
+GHIDRA_INSTALL_DIR=/path/to/ghidra pytest tests/
+```
+
+The system-binary integration test verifies manifest and artifact hashes, sidecars,
+addressed assembly bytes, call-site-aware xrefs, storage metadata, stack frames, and
+combined output. It skips when the host does not provide `true` or a Ghidra install.
 
 ## License
 

@@ -10,7 +10,7 @@ Reverse engineering through Ghidra's GUI (or MCP) means looking at one function 
 
 ## Install
 
-Requires [Ghidra](https://ghidra-sre.org/) 11.0+ (which bundles pyghidra).
+Requires [Ghidra](https://ghidra-sre.org/) 12.0+ and PyGhidra 3.0+.
 
 ```bash
 pip install -e .
@@ -61,12 +61,12 @@ ghidra-decomp ./dal_ivm.mod \
 firmware_decomp/
 ├── manifest.json       # fingerprint, versions, completion status, artifact hashes
 ├── functions/
-│   ├── 00010000_main.c
-│   ├── 00010000_main.json
-│   ├── 00010234_parse_config.c
+│   ├── 00010000_<digest>_main.c
+│   ├── 00010000_<digest>_main.json
+│   ├── 00010234_<digest>_parse_config.c
 │   └── ...
 ├── assembly/
-│   ├── 00010000_main.s
+│   ├── 00010000_<digest>_main.s
 │   └── ...
 ├── xrefs.jsonl         # call-site-aware code and data references
 ├── all_functions.c     # optional; enabled with --combined
@@ -86,6 +86,10 @@ ranges, signature and variable storage, calls, references, related strings and
 globals, decompilation status, artifact paths, and hashes. Assembly files contain
 instruction addresses, raw bytes, mnemonics, and operands.
 
+Schema 2 artifact filenames include a stable digest and bounded ASCII components so
+segmented addresses, long symbols, and platform-reserved names remain safe. Consumers
+must follow the artifact paths in `functions.json` rather than constructing filenames.
+
 ```c
 // Function: parse_config
 // Address:  00010234
@@ -98,11 +102,13 @@ void parse_config(char *param_1, int param_2, int param_3) {
 }
 ```
 
-`manifest.json` is the corpus completion marker. It fingerprints the input bytes and
-analysis configuration, records Ghidra/PyGhidra/tool versions, summarizes function
-statuses, and hashes every generated index. While an export is running,
-`.run-state.json` marks the corpus incomplete. The manifest is written atomically only
-after the required artifacts and indexes are durable.
+`manifest.json` is the corpus completion marker. It fingerprints the snapshotted input
+bytes and analysis configuration, records Ghidra/PyGhidra/tool versions, summarizes
+function statuses, and hashes every generated index. Exports are built in a hidden
+sibling staging directory whose `.run-state.json` marks that staging corpus incomplete.
+The existing completed output remains untouched if analysis fails. Publication is
+serialized by a destination lock and occurs only after the staged manifest, artifacts,
+and indexes are durable.
 
 Each function receives at most the configured `--timeout`. A failed decompilation is
 recorded as `fallback`; its C artifact contains the error while its normal assembly
@@ -122,8 +128,11 @@ Fast checks:
 ruff check src/ tests/
 ruff format --check src/ tests/
 mypy src/ghidra_decomp/ --ignore-missing-imports
-pytest tests/test_artifacts.py
+pytest tests/test_artifacts.py tests/test_decompiler_helpers.py
 ```
+
+CI installs the project and pytest before running these fast unit/CLI test modules.
+It does not run tests that start embedded Ghidra.
 
 The complete suite starts embedded Ghidra and decompiles both the repository fixture
 and the host's `true` executable:

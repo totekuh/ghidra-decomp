@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Disassemblers",
 ]
 dependencies = [
-    "pyghidra",
+    "pyghidra>=3.0",
     "click",
 ]
 

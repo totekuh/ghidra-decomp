@@ -13,12 +13,12 @@ Do not broadly scan `/home/witchtape`. Work inside this repository or another ex
 ## Repository state
 
 - Repository: `/home/witchtape/tools/ghidra-decomp`
-- Package: Python 3.10+, Click, PyGhidra, MIT licensed
+- Package: version 0.3.0, Python 3.10+, Click, PyGhidra 3.0+, Ghidra 12+, MIT licensed
 - CLI entry point: `ghidra-decomp = ghidra_decomp.cli:main`
 - Core implementation: `src/ghidra_decomp/decompiler.py`
 - Artifact helpers: `src/ghidra_decomp/artifacts.py`
 - End-to-end tests: `tests/test_e2e.py` and `tests/test_system_e2e.py`
-- Milestone 1, artifact correctness, is complete and covered by unit and live-Ghidra tests.
+- Milestone 1, artifact correctness, is complete, prepared for version 0.3.0, and covered by unit and live-Ghidra tests.
 - `ROADMAP.md` contains the remaining feature backlog and external-tool survey.
 
 ## Current pipeline
@@ -30,8 +30,9 @@ binary
   -> optional rebase and entry-point creation
   -> run auto-analysis
   -> serially decompile every discovered function
-  -> atomically export C, assembly, sidecars, xrefs, and global indexes
-  -> publish manifest.json as the completion marker
+  -> export C, assembly, sidecars, xrefs, and indexes in sibling staging
+  -> publish manifest.json as the staged completion marker
+  -> serialize replacement of the previous owned corpus
   -> delete the temporary Ghidra project through ExitStack cleanup
 ```
 
@@ -41,9 +42,9 @@ Current output:
 <output>/
 |-- manifest.json
 |-- functions.json
-|-- functions/<address>_<name>.c
-|-- functions/<address>_<name>.json
-|-- assembly/<address>_<name>.s
+|-- functions/<safe-address>_<digest>_<safe-name>.c
+|-- functions/<safe-address>_<digest>_<safe-name>.json
+|-- assembly/<safe-address>_<digest>_<safe-name>.s
 |-- xrefs.jsonl
 |-- callgraph.json
 |-- strings.json
@@ -75,9 +76,11 @@ Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`
 
 ### Reliability
 
-- Interrupted output is marked by `.run-state.json` and has no valid completion manifest, but function-level resume is not implemented.
+- Interrupted staging is marked by `.run-state.json`; a previous complete corpus remains valid, but function-level resume is not implemented.
 - Existing valid per-function artifacts are rebuilt rather than hash-validated and reused.
 - The fingerprint is recorded but is not yet used as a project or output cache key.
+- A process killed during analysis can leave a hidden sibling staging directory that currently requires manual cleanup.
+- Replacing an existing output uses two serialized directory renames, so readers can briefly observe the output path as absent.
 
 ## Current artifact contract
 
@@ -87,10 +90,10 @@ Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`
 |-- functions.json
 |-- callgraph.json
 |-- functions/
-|   |-- <address>_<name>.c
-|   `-- <address>_<name>.json
+|   |-- <safe-address>_<digest>_<safe-name>.c
+|   `-- <safe-address>_<digest>_<safe-name>.json
 |-- assembly/
-|   `-- <address>_<name>.s
+|   `-- <safe-address>_<digest>_<safe-name>.s
 |-- xrefs.jsonl
 |-- strings.json
 |-- symbols.json
@@ -106,7 +109,7 @@ Each function sidecar contains at least:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "parse_config",
   "address": "00100234",
   "body_ranges": [{"start": "00100234", "end": "0010034f"}],
@@ -123,8 +126,8 @@ Each function sidecar contains at least:
   "strings": [],
   "globals": [],
   "artifacts": {
-    "pseudocode": "functions/00100234_parse_config.c",
-    "assembly": "assembly/00100234_parse_config.s"
+    "pseudocode": "functions/00100234_<digest>_parse_config.c",
+    "assembly": "assembly/00100234_<digest>_parse_config.s"
   },
   "decompilation": {
     "status": "success",
@@ -145,7 +148,7 @@ Call edges must include the call-site address, target address/name when resolved
 - Counts for discovered, successful, fallback, failed, and skipped functions.
 - Paths and hashes for generated indexes.
 
-Use a temporary run-state file while work is incomplete. Publish `manifest.json` atomically only after all required indexes are durable.
+Use a temporary run-state file inside sibling staging while work is incomplete. Publish `manifest.json` there only after all required indexes are durable, then replace only an ownership-validated destination under the publication lock.
 
 ## Implementation sequence
 
@@ -226,7 +229,7 @@ mypy src/ghidra_decomp/ --ignore-missing-imports
 pytest tests/
 ```
 
-The end-to-end suite requires Ghidra and can take several minutes. CI currently runs formatting, linting, and type checking but not the real Ghidra suite.
+The end-to-end suite requires Ghidra 12+ and can take several minutes. CI installs the project and test dependency, then runs the fast unit/CLI tests in addition to formatting, linting, and type checking, but not the real Ghidra suite.
 
 ## Next coding slice
 

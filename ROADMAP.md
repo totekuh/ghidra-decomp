@@ -2,11 +2,12 @@
 
 ## Function context artifacts
 
-- [x] Emit `functions/<address>_<name>.c` with decompiled pseudocode.
-- [x] Emit `functions/<address>_<name>.json` with the function signature, callers, callees, call-site addresses, referenced strings and globals, parameters, local variables, and stack/register storage.
-- [x] Emit `assembly/<address>_<name>.s` with instruction addresses, raw bytes, and disassembly for every function.
+- [x] Emit digest-qualified, platform-safe per-function C artifacts.
+- [x] Emit adjacent JSON sidecars with the function signature, callers, callees, call-site addresses, referenced strings and globals, parameters, local variables, and stack/register storage.
+- [x] Emit digest-qualified assembly artifacts with instruction addresses, raw bytes, and disassembly for every function.
 - [x] Link every artifact from `functions.json`, including decompilation status and errors.
 - [x] Export generic code and data references rather than limiting xrefs to strings.
+- [x] Prepare the completed artifact contract as package version 0.3.0.
 
 ## Reproducible analysis
 

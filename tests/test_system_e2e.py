@@ -1,6 +1,7 @@
 """Integration test against a real binary supplied by the host system."""
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -31,6 +32,8 @@ def system_decomp(tmp_path_factory):
     ghidra_path = Path(os.environ.get("GHIDRA_INSTALL_DIR", "/usr/share/ghidra"))
     if not ghidra_path.is_dir():
         pytest.skip("Ghidra installation was not found")
+    if importlib.util.find_spec("pyghidra") is None:
+        pytest.skip("pyghidra is not installed")
     output = tmp_path_factory.mktemp("system_decomp")
     result = subprocess.run(
         [
@@ -61,14 +64,15 @@ def test_manifest_is_complete_and_fingerprinted(system_decomp):
     binary, output = system_decomp
     manifest = json.loads((output / "manifest.json").read_text())
 
-    assert manifest["schema_version"] == 1
+    assert manifest["schema_version"] == 2
     assert manifest["status"] == "complete"
     assert manifest["input"] == {
         "path": str(binary),
         "sha256": _sha256(binary),
         "size": binary.stat().st_size,
     }
-    assert manifest["fingerprint"]["sha256"]
+    assert manifest["fingerprints"]["request"]["sha256"]
+    assert manifest["fingerprints"]["resolved"]["sha256"]
     assert manifest["tool"]["ghidra_version"]
     assert manifest["analysis"]["language_id"]
     assert manifest["analysis"]["compiler_id"]
@@ -122,10 +126,9 @@ def test_function_artifacts_and_sidecars_match(system_decomp):
             assert _sha256(path) == artifacts[hash_key]
 
         sidecar = json.loads((output / artifacts["sidecar"]).read_text())
-        assert sidecar["address"] == function["address"]
-        assert (
-            sidecar["artifacts"]["pseudocode_sha256"] == artifacts["pseudocode_sha256"]
-        )
+        expected = json.loads(json.dumps(function))
+        expected["artifacts"].pop("sidecar_sha256")
+        assert sidecar == expected
 
         for variable in (
             function["signature"]["parameters"] + function["signature"]["locals"]

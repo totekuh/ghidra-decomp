@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -18,13 +19,40 @@ from .artifacts import (
     atomic_write_json,
     atomic_write_text,
     build_fingerprint,
+    ensure_directory,
+    fsync_tree,
+    publish_directory,
+    recover_destination,
     sha256_file,
+    snapshot_input,
+    validate_destination,
 )
 
 
-def _sanitize_name(name: str) -> str:
+def _sanitize_name(name: str, max_length: int = 80) -> str:
     """Turn a function name into a safe filename component."""
-    return re.sub(r"[^\w\-.]", "_", name)
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", name).rstrip(". ") or "_"
+    reserved = {"CON", "PRN", "AUX", "NUL"} | {
+        f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
+    }
+    if safe.upper() in reserved:
+        safe = f"_{safe}"
+    return safe[:max_length]
+
+
+def _artifact_stem(address: str, name: str, max_length: int = 120) -> str:
+    """Build a bounded, portable, collision-resistant artifact stem."""
+    digest = hashlib.sha256(f"{address}\0{name}".encode()).hexdigest()[:24]
+    safe_address = _sanitize_name(address, 40)
+    name_limit = max(1, max_length - len(safe_address) - len(digest) - 2)
+    safe_name = _sanitize_name(name, name_limit)
+    return f"{safe_address}_{digest}_{safe_name}"
+
+
+def _failure_comment(error: object) -> str:
+    """Render every fallback error line as valid C++-style commentary."""
+    lines = str(error).splitlines() or ["decompilation failed"]
+    return "".join(f"// DECOMPILATION FAILED: {line}\n" for line in lines)
 
 
 def _func_header_comment(func) -> str:
@@ -59,13 +87,12 @@ def _start_pyghidra(ghidra_path: Path | None):
     except ImportError:
         raise click.ClickException(
             "pyghidra is not installed. Install it with: pip install pyghidra\n"
-            "pyghidra is bundled with Ghidra 11+."
+            "pyghidra is bundled with Ghidra 12+."
         )
 
     if not pyghidra.started():
-        install_dir = str(ghidra_path) if ghidra_path else None
         try:
-            pyghidra.start(install_dir=install_dir) if install_dir else pyghidra.start()
+            pyghidra.start(install_dir=ghidra_path) if ghidra_path else pyghidra.start()
         except Exception as e:  # noqa: BLE001 - Java exceptions have no stable base class
             hint = ""
             if not ghidra_path:
@@ -117,96 +144,154 @@ def decompile_binary(
     entry: str | None = None,
 ) -> None:
     """Decompile a binary and write structured output."""
-    output.mkdir(parents=True, exist_ok=True)
-    manifest_path = output / "manifest.json"
-    if manifest_path.exists():
-        manifest_path.unlink()
-    run_state_path = output / ".run-state.json"
+    binary = binary.resolve()
+    output = output.resolve()
+    if binary.stat().st_size == 0:
+        raise click.ClickException(f"Input file is empty: {binary}")
+    if binary.is_relative_to(output):
+        raise click.ClickException(
+            f"Output directory must not contain the input binary: {output}"
+        )
+
+    ensure_directory(output.parent)
+    try:
+        recover_destination(output)
+        expected_destination = validate_destination(output)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+
     requested_analysis = {
         "base_address": base_addr,
         "entry_point": entry,
         "language": language,
         "compiler": compiler,
     }
-    atomic_write_json(
-        run_state_path,
-        {
-            "schema_version": SCHEMA_VERSION,
-            "status": "incomplete",
-            "fingerprint": build_fingerprint(binary, requested_analysis),
-        },
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
     )
-
-    pyghidra = _start_pyghidra(ghidra_path)
-
-    open_kwargs: dict[str, object] = {"analyze": False}
-    if language is not None:
-        open_kwargs["language"] = language
-    if compiler is not None:
-        open_kwargs["compiler"] = compiler
-
-    stack = ExitStack()
-    project_root = stack.enter_context(
-        tempfile.TemporaryDirectory(prefix="ghidra-decomp-")
-    )
-    open_kwargs["project_location"] = project_root
-    open_kwargs["project_name"] = "project"
     try:
-        flat_api = stack.enter_context(
-            pyghidra.open_program(str(binary), **open_kwargs)
+        with tempfile.TemporaryDirectory(prefix="ghidra-decomp-") as workspace:
+            input_dir = Path(workspace) / "input"
+            project_dir = Path(workspace) / "project"
+            input_dir.mkdir()
+            project_dir.mkdir()
+            snapshot = input_dir / "binary"
+            input_identity = snapshot_input(binary, snapshot)
+            request_fingerprint = build_fingerprint(input_identity, requested_analysis)
+            atomic_write_json(
+                staging / ".run-state.json",
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "status": "incomplete",
+                    "tool": {"name": "ghidra-decomp", "version": __version__},
+                    "request_fingerprint": request_fingerprint,
+                },
+            )
+
+            pyghidra = _start_pyghidra(ghidra_path)
+            open_kwargs: dict[str, object] = {
+                "analyze": False,
+                "project_location": str(project_dir),
+                "project_name": "project",
+            }
+            if language is not None:
+                open_kwargs["language"] = language
+            if compiler is not None:
+                open_kwargs["compiler"] = compiler
+
+            stack = ExitStack()
+            try:
+                flat_api = stack.enter_context(
+                    pyghidra.open_program(str(snapshot), **open_kwargs)
+                )
+            except Exception as e:  # noqa: BLE001 - Java exceptions have no stable base class
+                stack.close()
+                msg = str(e)
+                if "No load spec found" in msg:
+                    hint = (
+                        f"Ghidra could not identify {binary.name}. Likely a raw or unknown "
+                        "format.\nPass --language (and optionally --compiler) to force a "
+                        "spec. Run with --list-languages to discover IDs."
+                    )
+                elif language is not None:
+                    hint = (
+                        f"Failed to load with --language {language}"
+                        + (f" --compiler {compiler}" if compiler else "")
+                        + f": {msg}"
+                    )
+                else:
+                    hint = f"Failed to open program: {msg}"
+                raise click.ClickException(hint)
+
+            with stack:
+                program = flat_api.getCurrentProgram()
+                if base_addr is not None:
+                    _rebase_program(program, base_addr)
+
+                if entry is not None:
+                    _mark_entry(program, flat_api, entry)
+
+                _run_analysis(program, flat_api)
+                _export_all(
+                    program,
+                    input_identity,
+                    staging,
+                    timeout,
+                    combined=combined,
+                    requested_analysis=requested_analysis,
+                    request_fingerprint=request_fingerprint,
+                    pyghidra_version=getattr(pyghidra, "__version__", "unknown"),
+                )
+
+        try:
+            leftover_backup = publish_directory(staging, output, expected_destination)
+        except ValueError as error:
+            raise click.ClickException(str(error)) from error
+        if leftover_backup is not None:
+            click.echo(
+                f"Warning: published corpus but could not remove backup {leftover_backup}",
+                err=True,
+            )
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+
+
+def _parse_address(program, value: str, *, label: str, param_hint: str):
+    """Parse an unsigned offset without passing a high-half integer through JPype."""
+    try:
+        addr_value = int(value, 0)
+    except ValueError:
+        raise click.BadParameter(
+            f"Invalid {label} address: {value!r}. Use hex, decimal, or octal format.",
+            param_hint=param_hint,
         )
+    addr_space = program.getAddressFactory().getDefaultAddressSpace()
+    if addr_value < 0 or addr_value >= 1 << addr_space.getSize():
+        raise click.BadParameter(
+            f"{label.capitalize()} address {value!r} is outside the "
+            f"{addr_space.getSize()}-bit address space.",
+            param_hint=param_hint,
+        )
+    try:
+        # The String overload supports unsigned 64-bit offsets; Java long does not.
+        address = addr_space.getAddress(f"{addr_value:x}")
     except Exception as e:  # noqa: BLE001 - Java exceptions have no stable base class
-        stack.close()
-        msg = str(e)
-        if "No load spec found" in msg:
-            hint = (
-                f"Ghidra could not identify {binary.name}. Likely a raw or unknown "
-                "format.\nPass --language (and optionally --compiler) to force a "
-                "spec. Run with --list-languages to discover IDs."
-            )
-        elif language is not None:
-            hint = (
-                f"Failed to load with --language {language}"
-                + (f" --compiler {compiler}" if compiler else "")
-                + f": {msg}"
-            )
-        else:
-            hint = f"Failed to open program: {msg}"
-        raise click.ClickException(hint)
-
-    with stack:
-        program = flat_api.getCurrentProgram()
-        if base_addr is not None:
-            _rebase_program(program, base_addr)
-
-        if entry is not None:
-            _mark_entry(program, flat_api, entry)
-
-        _run_analysis(program, flat_api)
-        _export_all(
-            program,
-            binary,
-            output,
-            timeout,
-            combined=combined,
-            requested_analysis=requested_analysis,
-            pyghidra_version=getattr(pyghidra, "__version__", "unknown"),
+        raise click.BadParameter(
+            f"Invalid {label} address {value!r}: {e}", param_hint=param_hint
         )
-        run_state_path.unlink(missing_ok=True)
+    if address is None:
+        raise click.BadParameter(
+            f"Invalid {label} address: {value!r}.", param_hint=param_hint
+        )
+    return address
 
 
 def _rebase_program(program, base_addr: str) -> None:
     """Rebase the program to a new image base address."""
-    try:
-        addr_value = int(base_addr, 0)  # supports 0x hex, decimal, 0o octal
-    except ValueError:
-        raise click.BadParameter(
-            f"Invalid base address: {base_addr!r}. "
-            "Use hex (0x80000000), decimal, or octal (0o...) format.",
-            param_hint="'--base-addr'",
-        )
-    addr_space = program.getAddressFactory().getDefaultAddressSpace()
-    new_base = addr_space.getAddress(addr_value)
+    new_base = _parse_address(
+        program, base_addr, label="base", param_hint="'--base-addr'"
+    )
 
     old_base = program.getImageBase()
     click.echo(f"Rebasing: {old_base} -> {new_base}")
@@ -222,25 +307,28 @@ def _rebase_program(program, base_addr: str) -> None:
 
 def _mark_entry(program, flat_api, entry: str) -> None:
     """Disassemble from entry, create a function there, mark as program entry."""
-    try:
-        addr_value = int(entry, 0)
-    except ValueError:
-        raise click.BadParameter(
-            f"Invalid entry address: {entry!r}. "
-            "Use hex (0x31000), decimal, or octal (0o...) format.",
-            param_hint="'--entry'",
+    entry_addr = _parse_address(program, entry, label="entry", param_hint="'--entry'")
+    if not program.getMemory().contains(entry_addr):
+        raise click.ClickException(
+            f"Entry address {entry_addr} is not in program memory."
         )
-    addr_space = program.getAddressFactory().getDefaultAddressSpace()
-    entry_addr = addr_space.getAddress(addr_value)
     click.echo(f"Entry:   {entry_addr}")
 
     success = False
     tid = program.startTransaction("Mark entry point")
     try:
-        program.getSymbolTable().addExternalEntryPoint(entry_addr)
         flat_api.disassemble(entry_addr)
+        if program.getListing().getInstructionAt(entry_addr) is None:
+            raise click.ClickException(
+                f"Ghidra could not disassemble the entry address {entry_addr}."
+            )
         if flat_api.getFunctionAt(entry_addr) is None:
             flat_api.createFunction(entry_addr, "entry")
+        if flat_api.getFunctionAt(entry_addr) is None:
+            raise click.ClickException(
+                f"Ghidra could not create a function at entry address {entry_addr}."
+            )
+        program.getSymbolTable().addExternalEntryPoint(entry_addr)
         success = True
     finally:
         program.endTransaction(tid, success)
@@ -260,12 +348,13 @@ def _run_analysis(program, flat_api) -> None:
 
 def _export_all(
     program,
-    binary: Path,
+    input_identity: dict,
     output: Path,
     timeout: int,
     *,
     combined: bool = False,
     requested_analysis: dict,
+    request_fingerprint: dict,
     pyghidra_version: str,
 ) -> None:
     """Run all exports against an open Ghidra program."""
@@ -274,15 +363,10 @@ def _export_all(
     from ghidra.util.task import ConsoleTaskMonitor
 
     monitor = ConsoleTaskMonitor()
-    decomp = DecompInterface()
-    decomp.openProgram(program)
-
     func_dir = output / "functions"
     assembly_dir = output / "assembly"
     for artifact_dir in (func_dir, assembly_dir):
-        if artifact_dir.exists():
-            shutil.rmtree(artifact_dir)
-        artifact_dir.mkdir(parents=True)
+        artifact_dir.mkdir()
 
     fm = program.getFunctionManager()
     functions = list(fm.getFunctions(True))
@@ -294,19 +378,22 @@ def _export_all(
     types = _extract_types(program)
     sections = _extract_sections(program)
     string_addresses = {item["address"]: item for item in strings}
-    symbol_addresses = {item["address"]: item for item in symbols}
+    symbol_addresses: dict[str, list[dict]] = {}
+    for item in symbols:
+        symbol_addresses.setdefault(item["address"], []).append(item)
 
     click.echo(f"Functions: {total}")
     records: list[dict] = []
     record_by_address: dict[str, dict] = {}
 
+    decomp = DecompInterface()
     try:
+        decomp.openProgram(program)
         with click.progressbar(functions, label="Decompiling", show_pos=True) as bar:
             for func in bar:
                 addr = func.getEntryPoint().toString()
                 name = func.getName()
-                safe_name = _sanitize_name(name)
-                stem = f"{addr}_{safe_name}"
+                stem = _artifact_stem(addr, name)
                 c_path = func_dir / f"{stem}.c"
                 assembly_path = assembly_dir / f"{stem}.s"
                 header = _func_header_comment(func)
@@ -315,48 +402,60 @@ def _export_all(
 
                 status = "fallback"
                 error = None
-                try:
-                    result = decomp.decompileFunction(func, timeout, monitor)
-                    if result and result.decompileCompleted():
-                        decomp_func = result.getDecompiledFunction()
-                        c_code = decomp_func.getC() if decomp_func else None
-                        if c_code:
-                            content = header + c_code
-                            status = "success"
+                if not assembly:
+                    error = "function contains no instructions"
+                    content = header + _failure_comment(error)
+                else:
+                    try:
+                        result = decomp.decompileFunction(func, timeout, monitor)
+                        if result and result.decompileCompleted():
+                            decomp_func = result.getDecompiledFunction()
+                            c_code = decomp_func.getC() if decomp_func else None
+                            if c_code:
+                                content = header + c_code
+                                status = "success"
+                            else:
+                                error = "decompiler returned no C output"
+                                content = header + _failure_comment(error)
                         else:
-                            error = "decompiler returned no C output"
-                            content = header + f"// DECOMPILATION FAILED: {error}\n"
-                    else:
-                        error = (
-                            result.getErrorMessage() if result is not None else None
-                        ) or "decompilation did not complete"
-                        content = header + f"// DECOMPILATION FAILED: {error}\n"
-                except Exception as e:  # noqa: BLE001 - isolate per-function failures
-                    click.echo(
-                        f"\nWarning: error decompiling {name} at {addr}: {e}", err=True
-                    )
-                    error = f"exception: {e}"
-                    content = header + f"// DECOMPILATION FAILED: {error}\n"
+                            error = (
+                                result.getErrorMessage() if result is not None else None
+                            ) or "decompilation did not complete"
+                            content = header + _failure_comment(error)
+                    except Exception as e:  # noqa: BLE001 - isolate function failures
+                        click.echo(
+                            f"\nWarning: error decompiling {name} at {addr}: {e}",
+                            err=True,
+                        )
+                        error = f"exception: {e}"
+                        content = header + _failure_comment(error)
 
                 atomic_write_text(c_path, content)
                 references, calls = _extract_function_references(program, func)
-                record = _extract_function_record(func)
+                record = _extract_function_record(program, func)
+                related_strings = {
+                    ref["to_address"]: string_addresses[ref["to_address"]]
+                    for ref in references
+                    if ref["to_address"] in string_addresses
+                }
+                related_globals = {
+                    (
+                        symbol["address"],
+                        symbol["name"],
+                        symbol["namespace"],
+                        symbol["type"],
+                    ): symbol
+                    for ref in references
+                    for symbol in symbol_addresses.get(ref["to_address"], ())
+                }
                 record.update(
                     {
                         "schema_version": SCHEMA_VERSION,
                         "calls": calls,
                         "called_by": [],
                         "references": references,
-                        "strings": [
-                            string_addresses[ref["to_address"]]
-                            for ref in references
-                            if ref["to_address"] in string_addresses
-                        ],
-                        "globals": [
-                            symbol_addresses[ref["to_address"]]
-                            for ref in references
-                            if ref["to_address"] in symbol_addresses
-                        ],
+                        "strings": list(related_strings.values()),
+                        "globals": list(related_globals.values()),
                         "artifacts": {
                             "pseudocode": str(c_path.relative_to(output)),
                             "pseudocode_sha256": sha256_file(c_path),
@@ -387,13 +486,25 @@ def _export_all(
                 )
 
     for record in records:
+        record["called_by"] = list(
+            {
+                (
+                    item["call_site"],
+                    item["address"],
+                    item["reference_type"],
+                ): item
+                for item in record["called_by"]
+            }.values()
+        )
+
+    for record in records:
         sidecar_path = (
             output
             / "functions"
-            / (f"{record['address']}_{_sanitize_name(record['name'])}.json")
+            / (f"{_artifact_stem(record['address'], record['name'])}.json")
         )
-        atomic_write_json(sidecar_path, record)
         record["artifacts"]["sidecar"] = str(sidecar_path.relative_to(output))
+        atomic_write_json(sidecar_path, record)
         record["artifacts"]["sidecar_sha256"] = sha256_file(sidecar_path)
 
     combined_path = output / "all_functions.c"
@@ -416,20 +527,31 @@ def _export_all(
     fallback_count = sum(
         record["decompilation"]["status"] == "fallback" for record in records
     )
+    counts = {
+        "discovered": total,
+        "successful": total - fallback_count,
+        "fallback": fallback_count,
+        "failed": 0,
+        "skipped": 0,
+    }
     metadata = {
-        "binary": program.getExecutablePath(),
+        "binary": input_identity["path"],
         "format": program.getExecutableFormat(),
         "architecture": lang.getProcessor().toString(),
         "endian": lang.isBigEndian() and "big" or "little",
         "address_size": lang.getDefaultSpace().getSize(),
         "image_base": program.getImageBase().toString(),
         "num_functions": total,
-        "num_failed": fallback_count,
-        "failed_functions": [
+        "num_successful": counts["successful"],
+        "num_fallback": fallback_count,
+        "num_failed": 0,
+        "fallback_functions": [
             record["address"]
             for record in records
-            if record["decompilation"]["status"] != "success"
+            if record["decompilation"]["status"] == "fallback"
         ],
+        "failed_functions": [],
+        "counts": counts,
     }
     callgraph = {
         record["address"]: {
@@ -468,7 +590,7 @@ def _export_all(
         "compiler_id": str(program.getCompilerSpec().getCompilerSpecID()),
         "image_base": program.getImageBase().toString(),
         "loader": program.getExecutableFormat(),
-        "entry_points": [item["address"] for item in exports],
+        "entry_points": _extract_entry_points(program),
         "ghidra_version": ghidra_version,
         "pyghidra_version": pyghidra_version,
         "exporter_version": __version__,
@@ -479,12 +601,11 @@ def _export_all(
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "status": "complete",
-        "fingerprint": build_fingerprint(binary, actual_analysis),
-        "input": {
-            "path": str(binary.resolve()),
-            "sha256": sha256_file(binary),
-            "size": binary.stat().st_size,
+        "fingerprints": {
+            "request": request_fingerprint,
+            "resolved": build_fingerprint(input_identity, actual_analysis),
         },
+        "input": input_identity,
         "tool": {
             "name": "ghidra-decomp",
             "version": __version__,
@@ -493,13 +614,7 @@ def _export_all(
         },
         "analysis": actual_analysis,
         "export": {"timeout": timeout, "workers": 1, "combined": combined},
-        "counts": {
-            "discovered": total,
-            "successful": total - fallback_count,
-            "fallback": fallback_count,
-            "failed": 0,
-            "skipped": 0,
-        },
+        "counts": counts,
         "indexes": {
             str(path.relative_to(output)): {
                 "path": str(path.relative_to(output)),
@@ -508,6 +623,9 @@ def _export_all(
             for path in indexed_paths
         },
     }
+    run_state_path = output / ".run-state.json"
+    run_state_path.unlink()
+    fsync_tree(output)
     atomic_write_json(output / "manifest.json", manifest)
 
     click.echo(
@@ -538,14 +656,13 @@ def _disassemble_function(program, func) -> str:
 
 def _extract_function_references(program, func) -> tuple[list[dict], list[dict]]:
     """Extract code/data references originating in a function body."""
-    listing = program.getListing()
     ref_manager = program.getReferenceManager()
     references = []
     calls = []
     seen = set()
 
-    for code_unit in listing.getCodeUnits(func.getBody(), True):
-        for ref in ref_manager.getReferencesFrom(code_unit.getAddress()):
+    for source_address in ref_manager.getReferenceSourceIterator(func.getBody(), True):
+        for ref in ref_manager.getReferencesFrom(source_address):
             from_address = ref.getFromAddress().toString()
             to_address = ref.getToAddress().toString()
             ref_type = ref.getReferenceType()
@@ -669,7 +786,31 @@ def _variable_record(variable) -> dict:
     }
 
 
-def _extract_function_record(func) -> dict:
+def _symbols_at(program, address) -> list[dict]:
+    """Return every symbol at an address, retaining primary/alias identity."""
+    return [
+        {
+            "name": symbol.getName(),
+            "namespace": symbol.getParentNamespace().getName(True),
+            "type": symbol.getSymbolType().toString(),
+            "is_primary": symbol.isPrimary(),
+        }
+        for symbol in program.getSymbolTable().getSymbols(address)
+    ]
+
+
+def _function_aliases(function_name: str, symbols: list[dict]) -> list[str]:
+    """Return unique alias names, retaining non-primary same-name symbols."""
+    return list(
+        dict.fromkeys(
+            item["name"]
+            for item in symbols
+            if not item["is_primary"] or item["name"] != function_name
+        )
+    )
+
+
+def _extract_function_record(program, func) -> dict:
     """Build stable function identity, body, signature, and storage metadata."""
     body = func.getBody()
     return_type = func.getReturnType()
@@ -681,9 +822,12 @@ def _extract_function_record(func) -> dict:
 
     ranges = _body_ranges(body)
     stack_frame = func.getStackFrame()
+    function_symbols = _symbols_at(program, func.getEntryPoint())
     record = {
         "name": func.getName(),
         "address": func.getEntryPoint().toString(),
+        "symbols": function_symbols,
+        "aliases": _function_aliases(func.getName(), function_symbols),
         "body_ranges": ranges,
         "size": body.getNumAddresses(),
         "signature": {
@@ -724,7 +868,7 @@ def json_line(data: dict) -> str:
 
 def _extract_strings(program) -> list[dict]:
     """Extract all defined strings with their xrefs."""
-    from ghidra.program.model.data import StringDataType
+    from ghidra.program.model.data import AbstractStringDataType
 
     ref_manager = program.getReferenceManager()
     fm = program.getFunctionManager()
@@ -733,7 +877,7 @@ def _extract_strings(program) -> list[dict]:
 
     for data in listing.getDefinedData(True):
         dt = data.getDataType()
-        if not isinstance(dt, StringDataType) and "string" not in dt.getName().lower():
+        if not isinstance(dt, AbstractStringDataType):
             continue
 
         addr = data.getAddress()
@@ -779,11 +923,19 @@ def _extract_imports(program) -> list[dict]:
 
     for func in fm.getExternalFunctions():
         ext_loc = func.getExternalLocation()
+        external_address = ext_loc.getAddress() if ext_loc else None
+        linkage_addresses = func.getFunctionThunkAddresses(True) or ()
         imports.append(
             {
                 "name": func.getName(),
                 "library": ext_loc.getLibraryName() if ext_loc else None,
                 "address": func.getEntryPoint().toString(),
+                "external_address": external_address.toString()
+                if external_address
+                else None,
+                "linkage_addresses": sorted(
+                    address.toString() for address in linkage_addresses
+                ),
             }
         )
 
@@ -801,10 +953,28 @@ def _extract_exports(program) -> list[dict]:
                 {
                     "name": symbol.getName(),
                     "address": symbol.getAddress().toString(),
+                    "namespace": symbol.getParentNamespace().getName(True),
+                    "is_primary": symbol.isPrimary(),
                 }
             )
 
     return exports
+
+
+def _extract_entry_points(program) -> list[str]:
+    """Return exported addresses that resolve to code or a function entry."""
+    fm = program.getFunctionManager()
+    memory = program.getMemory()
+    addresses = set()
+    for item in _extract_exports(program):
+        address = program.getAddressFactory().getAddress(item["address"])
+        block = memory.getBlock(address) if address is not None else None
+        if address is not None and (
+            fm.getFunctionAt(address) is not None
+            or (block is not None and block.isExecute())
+        ):
+            addresses.add(item["address"])
+    return sorted(addresses)
 
 
 def _extract_symbols(program) -> list[dict]:

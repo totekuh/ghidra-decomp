@@ -182,8 +182,9 @@ class TestFunctions:
         for func in funcs:
             sidecar = decomp_output / func["artifacts"]["sidecar"]
             data = json.loads(sidecar.read_text())
-            assert data["address"] == func["address"]
-            assert data["schema_version"] == 1
+            expected = json.loads(json.dumps(func))
+            expected["artifacts"].pop("sidecar_sha256")
+            assert data == expected
 
     def test_assembly_has_addresses_and_bytes(self, decomp_output):
         assembly_files = list((decomp_output / "assembly").glob("*.s"))
@@ -370,10 +371,15 @@ class TestErrorHandling:
             timeout=300,
             check=False,
         )
-        # Ghidra accepts any file as "Raw Binary" — tool succeeds but with 0 meaningful functions
+        # Ghidra may accept any file as "Raw Binary" and produce no useful functions.
         if result.returncode == 0:
             meta = json.loads((out / "metadata.json").read_text())
             assert meta["num_functions"] == 0 or meta["format"] == "Raw Binary"
+        else:
+            output = result.stdout + result.stderr
+            assert (
+                "Ghidra could not identify" in output and "Pass --language" in output
+            ), f"unexpected invalid-input failure:\n{output}"
 
     def test_bad_base_addr(self, tmp_path):
         """Invalid --base-addr should fail with a clear error."""

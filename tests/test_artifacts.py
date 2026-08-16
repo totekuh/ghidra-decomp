@@ -13,6 +13,7 @@ from click import ClickException
 from click.testing import CliRunner
 
 from ghidra_decomp.artifacts import (
+    OWNED_SCHEMA_VERSIONS,
     SCHEMA_VERSION,
     atomic_write_json,
     atomic_write_text,
@@ -22,6 +23,9 @@ from ghidra_decomp.artifacts import (
     recover_destination,
     sha256_file,
     snapshot_input,
+    staging_lock,
+    staging_prefix,
+    sweep_orphan_staging,
     validate_destination,
 )
 from ghidra_decomp.cli import main
@@ -308,6 +312,7 @@ def test_export_setup_failure_does_not_create_decompiler(tmp_path, monkeypatch):
             60,
             requested_analysis={},
             request_fingerprint={},
+            filters={},
             pyghidra_version="test",
         )
 
@@ -362,3 +367,233 @@ def test_combined_option_is_forwarded(tmp_path, monkeypatch, argument, expected)
 
     assert result.exit_code == 0
     assert received == [expected]
+
+
+def _staged(output, suffix):
+    staging = output.parent / f"{staging_prefix(output)}{suffix}"
+    staging.mkdir()
+    (staging / "partial.c").write_text("half a corpus")
+    return staging
+
+
+def test_sweep_orphan_staging_removes_only_abandoned_siblings(tmp_path):
+    output = tmp_path / "corpus"
+    abandoned = _staged(output, "aaaa")
+    other_output = tmp_path / "unrelated"
+    foreign = _staged(other_output, "bbbb")
+    decoy = tmp_path / "corpus.staging-cccc"
+    decoy.mkdir()
+
+    removed = sweep_orphan_staging(output)
+
+    assert removed == [abandoned]
+    assert not abandoned.exists()
+    assert foreign.exists()
+    assert decoy.exists()
+
+
+def test_sweep_orphan_staging_spares_a_staging_directory_owned_by_a_live_run(tmp_path):
+    output = tmp_path / "corpus"
+    live = _staged(output, "dddd")
+    abandoned = _staged(output, "eeee")
+
+    with staging_lock(live):
+        removed = sweep_orphan_staging(output)
+
+    assert removed == [abandoned]
+    assert live.exists()
+    assert (live / "partial.c").read_text() == "half a corpus"
+
+
+def test_staging_lock_refuses_a_directory_another_holder_owns(tmp_path):
+    output = tmp_path / "corpus"
+    staging = _staged(output, "ffff")
+
+    with staging_lock(staging):
+        contender = staging_lock(staging)
+        with pytest.raises(ValueError, match="already owned"):
+            contender.__enter__()
+
+
+def test_staging_lock_file_is_never_published_into_the_corpus(tmp_path):
+    output = tmp_path / "corpus"
+    staging = _staged(output, "gggg")
+
+    with staging_lock(staging):
+        assert not any(path.name.endswith(".lock") for path in staging.iterdir())
+        assert (staging.parent / f"{staging.name}.lock").exists()
+
+    assert not (staging.parent / f"{staging.name}.lock").exists()
+
+
+def test_recover_destination_sweeps_staging_before_restoring_a_backup(tmp_path):
+    output = tmp_path / "corpus"
+    abandoned = _staged(output, "hhhh")
+    backup = tmp_path / f".{output.name}.backup-1-xyz"
+    backup.mkdir()
+    atomic_write_json(backup / "manifest.json", _complete_manifest())
+
+    assert recover_destination(output) is True
+
+    assert not abandoned.exists()
+    assert (output / "manifest.json").exists()
+
+
+def test_a_previous_schema_corpus_stays_replaceable(tmp_path):
+    output = tmp_path / "corpus"
+    output.mkdir()
+    previous = min(OWNED_SCHEMA_VERSIONS)
+    atomic_write_json(
+        output / "manifest.json", _complete_manifest(schema_version=previous)
+    )
+
+    assert previous != SCHEMA_VERSION
+    assert validate_destination(output).exists is True
+
+
+def test_a_foreign_schema_corpus_is_never_replaced(tmp_path):
+    output = tmp_path / "corpus"
+    output.mkdir()
+    atomic_write_json(
+        output / "manifest.json",
+        _complete_manifest(schema_version=max(OWNED_SCHEMA_VERSIONS) + 1),
+    )
+
+    with pytest.raises(ValueError, match="incomplete or unowned"):
+        validate_destination(output)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ([], {"cache_enabled": True, "resume": False}),
+        (["--no-cache"], {"cache_enabled": False, "resume": False}),
+        (["--resume"], {"cache_enabled": True, "resume": True}),
+        (["--force-analysis"], {"force_analysis": True, "force_export": False}),
+        (["--force-export"], {"force_analysis": False, "force_export": True}),
+    ],
+)
+def test_cache_and_resume_options_are_forwarded(
+    tmp_path, monkeypatch, arguments, expected
+):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    received = {}
+
+    def fake_decompile_binary(*args, **kwargs):
+        received.update(kwargs)
+
+    monkeypatch.setattr("ghidra_decomp.cli.decompile_binary", fake_decompile_binary)
+
+    result = CliRunner().invoke(main, [str(binary), *arguments])
+
+    assert result.exit_code == 0
+    for key, value in expected.items():
+        assert received[key] == value
+
+
+def test_cache_dir_is_forwarded_as_a_path(tmp_path, monkeypatch):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+
+    result = CliRunner().invoke(
+        main, [str(binary), "--cache-dir", str(tmp_path / "cache")]
+    )
+
+    assert result.exit_code == 0
+    assert received["cache_dir"] == tmp_path / "cache"
+
+
+def test_cache_dir_cannot_be_combined_with_no_cache(tmp_path):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+
+    result = CliRunner().invoke(
+        main, [str(binary), "--no-cache", "--cache-dir", str(tmp_path / "cache")]
+    )
+
+    assert result.exit_code != 0
+    assert "cannot be combined with --no-cache" in result.output
+
+
+@pytest.mark.parametrize(
+    ("arguments", "key", "expected"),
+    [
+        (["--workers", "3"], "workers", 3),
+        ([], "workers", None),
+        (["--include", "^a", "--include", "^b"], "include", ("^a", "^b")),
+        (["--exclude", "^_"], "exclude", ("^_",)),
+        (["--function", "1000", "--function", "2000"], "function", ("1000", "2000")),
+    ],
+)
+def test_worker_and_filter_options_are_forwarded(
+    tmp_path, monkeypatch, arguments, key, expected
+):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+
+    result = CliRunner().invoke(main, [str(binary), *arguments])
+
+    assert result.exit_code == 0
+    assert received[key] == expected
+
+
+def test_worker_count_must_be_positive(tmp_path):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+
+    result = CliRunner().invoke(main, [str(binary), "--workers", "0"])
+
+    assert result.exit_code != 0
+    assert "0 is not in the range x>=1" in result.output
+
+
+def test_secondary_product_options_are_forwarded(tmp_path, monkeypatch):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    archive = tmp_path / "types.gdt"
+    archive.write_bytes(b"archive")
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            str(binary),
+            "--gzf",
+            "--gdt",
+            str(archive),
+            "--semgrep-config",
+            "p/default",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert received["gzf"] is True
+    assert received["gdt"] == (str(archive),)
+    assert received["semgrep_config"] == "p/default"
+
+
+def test_a_missing_data_type_archive_is_rejected_by_the_cli(tmp_path):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+
+    result = CliRunner().invoke(
+        main, [str(binary), "--gdt", str(tmp_path / "absent.gdt")]
+    )
+
+    assert result.exit_code != 0
+    assert "does not exist" in result.output

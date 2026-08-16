@@ -12,10 +12,10 @@
 ## Reproducible analysis
 
 - [x] Add `manifest.json` with a schema version, input SHA-256 and size, Ghidra and tool versions, language/compiler IDs, image base, entry points, analysis settings, output paths, function status counts, and completion status.
-- [ ] Cache completed analysis by binary hash and analysis settings.
-- [ ] Add resumable output so interrupted runs keep valid artifacts and retry only missing or failed functions.
+- [x] Cache completed analysis by binary hash and analysis settings.
+- [x] Add resumable output so interrupted runs keep valid artifacts and retry only missing or failed functions.
 - [x] Write the completion manifest last and replace generated indexes atomically.
-- [ ] Retain a fingerprinted Ghidra project only when incremental reanalysis or writeback requires it.
+- [x] Retain a fingerprinted Ghidra project, disabled with `--no-cache`.
 
 ## Output efficiency
 
@@ -54,13 +54,13 @@ Surveyed on 2026-08-15. All candidates use Ghidra's decompiler, so the useful di
 
 `ghidrecomp` is the strongest directly comparable turnkey tool, but it optimizes C-file production rather than an evidence-rich analysis corpus. Its best features should become roadmap items here:
 
-- Add bounded parallel decompilation with one `DecompInterface` per worker and explicit per-function timeouts.
-- Reuse a fingerprinted persistent Ghidra project and support selective forced reanalysis.
-- Add function-name filters and resume only artifacts whose status and fingerprint are valid.
-- Add optional symbol-server/PDB lookup and GDT application before decompilation.
-- Add optional GZF and BSim export.
-- Add optional Semgrep scanning with SARIF output after corpus generation.
-- Benchmark threaded output against serial output for correctness, deterministic indexes, JVM memory use, and wall-clock time.
+- [x] Add bounded parallel decompilation with one `DecompInterface` per worker and explicit per-function timeouts.
+- [x] Reuse a fingerprinted persistent Ghidra project and support selective forced reanalysis.
+- [x] Add function-name filters and resume only artifacts whose status and fingerprint are valid.
+- [x] Add optional GDT application before decompilation. Symbol-server/PDB lookup is still open.
+- [x] Add optional GZF export. BSim is still open; it needs a BSim database.
+- [x] Add optional Semgrep scanning with SARIF output after corpus generation.
+- [x] Benchmark threaded output against serial output for correctness and deterministic indexes. JVM memory use and wall-clock time on a large binary are still unmeasured.
 
 ### Pipeline decision
 

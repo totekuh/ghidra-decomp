@@ -7,11 +7,10 @@ and validates the output structure and content.
 import json
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
+from conftest import FIXTURES, run_export
 
-FIXTURES = Path(__file__).parent / "fixtures"
 SAMPLE_BIN = FIXTURES / "sample"
 
 # Known functions compiled into the test binary
@@ -31,24 +30,7 @@ KNOWN_FUNCTIONS = {
 def decomp_output(tmp_path_factory):
     """Run ghidra-decomp once and return the output directory."""
     out = tmp_path_factory.mktemp("decomp_output")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "ghidra_decomp",
-            str(SAMPLE_BIN),
-            "-o",
-            str(out),
-            "--combined",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        check=False,
-    )
-    assert result.returncode == 0, (
-        f"ghidra-decomp failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-    )
+    run_export(SAMPLE_BIN, out, "--combined")
     return out
 
 
@@ -56,25 +38,7 @@ def decomp_output(tmp_path_factory):
 def decomp_output_rebased(tmp_path_factory):
     """Run ghidra-decomp with --base-addr and return the output directory."""
     out = tmp_path_factory.mktemp("decomp_rebased")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "ghidra_decomp",
-            str(SAMPLE_BIN),
-            "-o",
-            str(out),
-            "--base-addr",
-            "0xdead0000",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        check=False,
-    )
-    assert result.returncode == 0, (
-        f"ghidra-decomp (rebased) failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-    )
+    result = run_export(SAMPLE_BIN, out, "--base-addr", "0xdead0000")
     return out, result.stdout
 
 

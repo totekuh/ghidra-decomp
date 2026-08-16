@@ -11,5 +11,8 @@ CLAUDE.md
 *_ghidra/
 .mypy_cache/
 .ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 *.so
 *.dylib

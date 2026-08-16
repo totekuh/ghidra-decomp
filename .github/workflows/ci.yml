@@ -36,7 +36,12 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install . pytest
-      - run: pytest tests/test_artifacts.py tests/test_decompiler_helpers.py
+      - name: Test fixture checksums and provenance without Ghidra
+        run: pytest tests/test_multiarch_e2e.py::test_checked_in_fixture_hashes_and_provenance
+      - run: >
+          pytest tests/test_artifacts.py tests/test_cache.py
+          tests/test_decompiler_helpers.py tests/test_filters.py
+          tests/test_parallel.py
 
   # Note: e2e tests require a Ghidra installation and are not run in CI.
   # Run them locally with: pytest tests/

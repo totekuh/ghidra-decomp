@@ -1,24 +1,14 @@
 """Integration test against a real binary supplied by the host system."""
 
-import hashlib
-import importlib.util
 import json
-import os
 import re
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
+from conftest import require_ghidra, run_export, sha256_of
 
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+from ghidra_decomp.artifacts import SCHEMA_VERSION
 
 
 @pytest.fixture(scope="module")
@@ -29,33 +19,16 @@ def system_decomp(tmp_path_factory):
         pytest.skip("the host does not provide a `true` executable")
 
     binary = Path(binary_name).resolve()
-    ghidra_path = Path(os.environ.get("GHIDRA_INSTALL_DIR", "/usr/share/ghidra"))
-    if not ghidra_path.is_dir():
-        pytest.skip("Ghidra installation was not found")
-    if importlib.util.find_spec("pyghidra") is None:
-        pytest.skip("pyghidra is not installed")
+    ghidra_path = require_ghidra()
     output = tmp_path_factory.mktemp("system_decomp")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "ghidra_decomp",
-            str(binary),
-            "--ghidra-path",
-            str(ghidra_path),
-            "--combined",
-            "--timeout",
-            "30",
-            "-o",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
+    run_export(
+        binary,
+        output,
+        "--combined",
+        "--timeout",
+        "30",
+        ghidra_path=ghidra_path,
         timeout=600,
-        check=False,
-    )
-    assert result.returncode == 0, (
-        f"system binary export failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
     return binary, output
 
@@ -64,11 +37,11 @@ def test_manifest_is_complete_and_fingerprinted(system_decomp):
     binary, output = system_decomp
     manifest = json.loads((output / "manifest.json").read_text())
 
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == SCHEMA_VERSION
     assert manifest["status"] == "complete"
     assert manifest["input"] == {
         "path": str(binary),
-        "sha256": _sha256(binary),
+        "sha256": sha256_of(binary),
         "size": binary.stat().st_size,
     }
     assert manifest["fingerprints"]["request"]["sha256"]
@@ -76,7 +49,13 @@ def test_manifest_is_complete_and_fingerprinted(system_decomp):
     assert manifest["tool"]["ghidra_version"]
     assert manifest["analysis"]["language_id"]
     assert manifest["analysis"]["compiler_id"]
-    assert manifest["export"] == {"combined": True, "timeout": 30, "workers": 1}
+    export = manifest["export"]
+    assert export["combined"] is True
+    assert export["timeout"] == 30
+    assert export["resumed"] is False
+    assert 1 <= export["workers"] <= 4
+    assert manifest["cache"]["enabled"] is True
+    assert manifest["cache"]["reason"]
     assert not (output / ".run-state.json").exists()
 
     counts = manifest["counts"]
@@ -94,7 +73,7 @@ def test_manifest_index_hashes_match(system_decomp):
     for artifact in manifest["indexes"].values():
         path = output / artifact["path"]
         assert path.is_file()
-        assert _sha256(path) == artifact["sha256"]
+        assert sha256_of(path) == artifact["sha256"]
 
 
 def test_function_artifacts_and_sidecars_match(system_decomp):
@@ -123,7 +102,7 @@ def test_function_artifacts_and_sidecars_match(system_decomp):
         ):
             path = output / artifacts[path_key]
             assert path.is_file()
-            assert _sha256(path) == artifacts[hash_key]
+            assert sha256_of(path) == artifacts[hash_key]
 
         sidecar = json.loads((output / artifacts["sidecar"]).read_text())
         expected = json.loads(json.dumps(function))

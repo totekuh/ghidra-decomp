@@ -1,20 +1,29 @@
 """Focused unit tests for Ghidra extraction helpers."""
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import click
 import pytest
 
 from ghidra_decomp.decompiler import (
+    STATUS_FAILED,
+    STATUS_FALLBACK,
+    STATUS_SUCCESS,
+    _addresses_with_status,
     _artifact_stem,
+    _body_ranges,
     _extract_entry_points,
+    _extract_exports,
     _extract_function_references,
     _extract_imports,
+    _extract_strings,
     _failure_comment,
     _function_aliases,
     _mark_entry,
     _parse_address,
     _sanitize_name,
+    _summarize_statuses,
     _symbols_at,
     decompile_binary,
 )
@@ -187,6 +196,83 @@ def test_imports_include_external_and_linkage_addresses():
     ]
 
 
+def test_strings_skip_none_and_retain_string_valued_char_arrays(monkeypatch):
+    data_module = ModuleType("ghidra.program.model.data")
+
+    class AbstractStringDataType:
+        pass
+
+    data_module.AbstractStringDataType = AbstractStringDataType
+    monkeypatch.setitem(sys.modules, "ghidra.program.model.data", data_module)
+
+    def defined_data(data_type, value, address):
+        return SimpleNamespace(
+            getDataType=lambda: data_type,
+            getValue=lambda: value,
+            getAddress=lambda: Address(address),
+            getLength=lambda: 8,
+        )
+
+    items = [
+        defined_data(AbstractStringDataType(), None, "1000"),
+        defined_data(object(), "char array", "2000"),
+        defined_data(object(), None, "3000"),
+    ]
+    program = SimpleNamespace(
+        getReferenceManager=lambda: SimpleNamespace(getReferencesTo=lambda address: []),
+        getFunctionManager=lambda: object(),
+        getListing=lambda: SimpleNamespace(getDefinedData=lambda forward: items),
+    )
+
+    assert _extract_strings(program) == [
+        {"address": "2000", "value": "char array", "length": 8, "xrefs": []}
+    ]
+
+
+def test_exports_select_one_global_primary_symbol_per_address():
+    global_namespace = SimpleNamespace(
+        isGlobal=lambda: True, getName=lambda qualified: "Global"
+    )
+    local_namespace = SimpleNamespace(
+        isGlobal=lambda: False, getName=lambda qualified: "function"
+    )
+
+    def symbol(name, address, namespace, primary):
+        return SimpleNamespace(
+            getName=lambda: name,
+            getAddress=lambda: Address(address),
+            getParentNamespace=lambda: namespace,
+            isPrimary=lambda: primary,
+            isExternalEntryPoint=lambda: True,
+        )
+
+    symbols = [
+        symbol("$x", "1000", local_namespace, False),
+        symbol("exported", "1000", global_namespace, True),
+        symbol("exported_alias", "1000", global_namespace, False),
+        symbol(".L0", "2000", local_namespace, True),
+        symbol("global_fallback", "2000", global_namespace, False),
+    ]
+    program = SimpleNamespace(
+        getSymbolTable=lambda: SimpleNamespace(getAllSymbols=lambda forward: symbols)
+    )
+
+    assert _extract_exports(program) == [
+        {
+            "name": "exported",
+            "address": "1000",
+            "namespace": "Global",
+            "is_primary": True,
+        },
+        {
+            "name": "global_fallback",
+            "address": "2000",
+            "namespace": "Global",
+            "is_primary": False,
+        },
+    ]
+
+
 def test_symbols_at_preserves_primary_and_alias_symbols():
     namespace = SimpleNamespace(getName=lambda include_namespace: "global")
     symbol_type = SimpleNamespace(toString=lambda: "Label")
@@ -254,3 +340,91 @@ def test_manifest_entry_points_exclude_non_executable_data_exports(monkeypatch):
     )
 
     assert _extract_entry_points(program) == ["1000", "2000"]
+
+
+def _range(start, end):
+    return SimpleNamespace(
+        getMinAddress=lambda: Address(start), getMaxAddress=lambda: Address(end)
+    )
+
+
+def test_body_ranges_preserves_every_range_of_a_noncontiguous_function():
+    body = SimpleNamespace(
+        getAddressRanges=lambda forward: [
+            _range("00100234", "0010028f"),
+            _range("00100400", "0010043f"),
+        ]
+    )
+
+    assert _body_ranges(body) == [
+        {"start": "00100234", "end": "0010028f"},
+        {"start": "00100400", "end": "0010043f"},
+    ]
+
+
+def test_body_ranges_is_empty_for_a_function_without_addresses():
+    assert _body_ranges(SimpleNamespace(getAddressRanges=lambda forward: [])) == []
+
+
+def _status_record(address, status, reused=False):
+    return {
+        "address": address,
+        "decompilation": {"status": status, "error": None, "reused": reused},
+    }
+
+
+def test_status_summary_counts_every_decompilation_outcome():
+    records = [
+        _status_record("1000", STATUS_SUCCESS),
+        _status_record("2000", STATUS_SUCCESS, reused=True),
+        _status_record("3000", STATUS_FALLBACK),
+        _status_record("4000", STATUS_FAILED),
+    ]
+
+    counts = _summarize_statuses(records)
+
+    assert counts == {
+        "discovered": 4,
+        "successful": 2,
+        "fallback": 1,
+        "failed": 1,
+        "skipped": 1,
+    }
+    # Outcomes partition the corpus; reuse is a separate dimension that overlaps
+    # them, so it is deliberately excluded from this identity.
+    assert counts["discovered"] == (
+        counts["successful"] + counts["fallback"] + counts["failed"]
+    )
+    assert counts["skipped"] <= counts["discovered"]
+    assert _addresses_with_status(records, STATUS_FAILED) == ["4000"]
+    assert _addresses_with_status(records, STATUS_FALLBACK) == ["3000"]
+
+
+def test_status_summary_counts_reuse_independently_of_outcome():
+    records = [
+        _status_record("1000", STATUS_SUCCESS, reused=True),
+        _status_record("2000", STATUS_FALLBACK, reused=True),
+    ]
+
+    counts = _summarize_statuses(records)
+
+    assert counts["skipped"] == 2
+    assert counts["successful"] == 1
+    assert counts["fallback"] == 1
+
+
+def test_status_summary_counts_an_unknown_status_as_failed():
+    counts = _summarize_statuses([_status_record("1000", "bogus")])
+
+    assert counts["failed"] == 1
+    assert counts["discovered"] == 1
+
+
+def test_status_summary_of_an_empty_corpus_is_all_zero():
+    assert _summarize_statuses([]) == {
+        "discovered": 0,
+        "successful": 0,
+        "fallback": 0,
+        "failed": 0,
+        "skipped": 0,
+    }

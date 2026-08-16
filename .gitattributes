@@ -1,2 +1,8 @@
-# Prevent Git from mangling binary test fixtures
+# Prevent Git from mangling binary test fixtures. Keep source and metadata textual.
 tests/fixtures/sample binary
+tests/fixtures/multiarch_aarch64 binary
+tests/fixtures/multiarch_armv7 binary
+tests/fixtures/multiarch_mipsel binary
+tests/fixtures/multiarch_ppc32 binary
+tests/fixtures/multiarch_riscv64 binary
+tests/fixtures/multiarch_x86_32 binary

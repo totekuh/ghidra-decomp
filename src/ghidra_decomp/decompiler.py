@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -25,8 +28,35 @@ from .artifacts import (
     recover_destination,
     sha256_file,
     snapshot_input,
+    staging_lock,
+    staging_prefix,
     validate_destination,
 )
+from .cache import (
+    PROJECT_NAME,
+    REASON_BUSY,
+    REASON_DISABLED,
+    REASON_FORCED,
+    CacheOutcome,
+    cache_key_from,
+    default_cache_root,
+    discard_project,
+    entry_lock,
+    entry_path,
+    evaluate_entry,
+    mark_complete,
+    mark_incomplete,
+    resolved_versions,
+)
+
+# Per-function decompilation outcomes recorded in sidecars and manifest counts.
+# Every function ends in exactly one of these, so they sum to the discovered
+# total. Reuse is tracked separately: a reused function still has the outcome it
+# earned when it was first decompiled.
+STATUS_SUCCESS = "success"
+STATUS_FALLBACK = "fallback"
+STATUS_FAILED = "failed"
+STATUSES = (STATUS_SUCCESS, STATUS_FALLBACK, STATUS_FAILED)
 
 
 def _sanitize_name(name: str, max_length: int = 80) -> str:
@@ -53,6 +83,146 @@ def _failure_comment(error: object) -> str:
     """Render every fallback error line as valid C++-style commentary."""
     lines = str(error).splitlines() or ["decompilation failed"]
     return "".join(f"// DECOMPILATION FAILED: {line}\n" for line in lines)
+
+
+def _is_timeout_error(error: object) -> bool:
+    """Detect the decompiler's timeout message without matching other failures."""
+    text = str(error).lower()
+    return "timeout" in text or "timed out" in text
+
+
+def _summarize_statuses(records: list[dict]) -> dict:
+    """Summarize per-function outcomes into the manifest's counts block.
+
+    `successful`, `fallback`, and `failed` partition the discovered functions.
+    `skipped` counts the reused subset and therefore overlaps them: it answers
+    "how much work did this run avoid", not "how did this function end".
+    """
+    tally = dict.fromkeys(STATUSES, 0)
+    skipped = 0
+    for record in records:
+        decompilation = record.get("decompilation", {})
+        status = decompilation.get("status")
+        if status in tally:
+            tally[status] += 1
+        else:
+            # An unrecognized status must never silently vanish from the totals.
+            tally[STATUS_FAILED] += 1
+        if decompilation.get("reused"):
+            skipped += 1
+    return {
+        "discovered": len(records),
+        "successful": tally[STATUS_SUCCESS],
+        "fallback": tally[STATUS_FALLBACK],
+        "failed": tally[STATUS_FAILED],
+        "skipped": skipped,
+    }
+
+
+def _addresses_with_status(records: list[dict], status: str) -> list[str]:
+    """List the addresses of every function that ended in one status."""
+    return [
+        record["address"]
+        for record in records
+        if record.get("decompilation", {}).get("status") == status
+    ]
+
+
+def normalize_filters(filters: dict | None) -> dict[str, list[str]]:
+    """Render the function selection in one canonical, comparable form.
+
+    A filtered corpus is not interchangeable with an unfiltered one, so this
+    shape is recorded in the manifest and compared before any reuse.
+    """
+    filters = filters or {}
+    return {
+        key: sorted(filters.get(key) or ())
+        for key in ("include", "exclude", "function")
+    }
+
+
+def _artifact_hashes_match(previous: Path, record: dict) -> bool:
+    """Check every artifact a record claims still hashes to the recorded digest."""
+    artifacts = record.get("artifacts")
+    if not isinstance(artifacts, dict):
+        return False
+    for path_key, hash_key in (
+        ("pseudocode", "pseudocode_sha256"),
+        ("assembly", "assembly_sha256"),
+        ("sidecar", "sidecar_sha256"),
+    ):
+        relative = artifacts.get(path_key)
+        expected = artifacts.get(hash_key)
+        if not isinstance(relative, str) or not isinstance(expected, str):
+            return False
+        path = previous / relative
+        # A recorded path must stay inside the corpus it came from.
+        if not path.resolve().is_relative_to(previous.resolve()):
+            return False
+        if not path.is_file() or sha256_file(path) != expected:
+            return False
+    return True
+
+
+def _reusable_function_artifacts(previous: Path, record: dict) -> bool:
+    """Decide whether a previously exported function may be reused verbatim.
+
+    Reuse requires a settled successful outcome and artifacts that still hash to
+    what the previous run recorded. A mismatch is never silently trusted; the
+    function is decompiled again.
+    """
+    if record.get("decompilation", {}).get("status") != STATUS_SUCCESS:
+        return False
+    sidecar_relative = record.get("artifacts", {}).get("sidecar")
+    if not isinstance(sidecar_relative, str):
+        return False
+    try:
+        sidecar = json.loads((previous / sidecar_relative).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(sidecar, dict):
+        return False
+    return _artifact_hashes_match(previous, record)
+
+
+def load_resume_index(
+    previous: Path, request_fingerprint: dict, filters: dict | None = None
+) -> dict[str, dict]:
+    """Map artifact stem to the reusable record of a previous corpus.
+
+    An empty map means a full export. That is the correct degradation whenever
+    the previous output is missing, incomplete, built by another schema, or
+    describes a different binary, analysis request, or function selection.
+
+    Filters gate reuse but deliberately do not gate the analysis cache: the same
+    binary analyzed the same way yields the same Ghidra project no matter which
+    subset of its functions is later exported.
+    """
+    try:
+        manifest = json.loads((previous / "manifest.json").read_text(encoding="utf-8"))
+        records = json.loads((previous / "functions.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(manifest, dict) or not isinstance(records, list):
+        return {}
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        return {}
+    if manifest.get("status") != "complete":
+        return {}
+    previous_request = manifest.get("fingerprints", {}).get("request", {})
+    if previous_request.get("sha256") != request_fingerprint.get("sha256"):
+        return {}
+    if manifest.get("export", {}).get("filters") != normalize_filters(filters):
+        return {}
+
+    reusable = {}
+    for record in records:
+        if not isinstance(record, dict) or "address" not in record:
+            continue
+        if not _reusable_function_artifacts(previous, record):
+            continue
+        reusable[_artifact_stem(record["address"], record["name"])] = record
+    return reusable
 
 
 def _func_header_comment(func) -> str:
@@ -131,6 +301,52 @@ def list_languages(*, ghidra_path: Path | None = None) -> None:
     click.echo(f"\n{len(descs)} language(s).")
 
 
+def _prepare_cache(
+    run_stack: ExitStack,
+    *,
+    cache_enabled: bool,
+    cache_dir: Path | None,
+    request_fingerprint: dict,
+    versions: dict,
+    force_analysis: bool,
+    fallback_location: Path,
+) -> tuple[CacheOutcome, Path]:
+    """Choose where the Ghidra project lives and whether it may be reused.
+
+    Returns the outcome to record in the manifest and the project location to
+    open. Every failure to reuse falls back to the throwaway location rather
+    than aborting the run.
+    """
+    if not cache_enabled:
+        return (
+            CacheOutcome(False, False, None, REASON_DISABLED),
+            fallback_location,
+        )
+
+    root = (cache_dir or default_cache_root()).expanduser().resolve()
+    entry = entry_path(root, cache_key_from(request_fingerprint))
+    acquired = run_stack.enter_context(entry_lock(entry))
+    if not acquired:
+        # Another run owns this analysis. Sharing one Ghidra project would
+        # corrupt both, so this run works from a temporary project instead.
+        click.echo(f"Cache entry is busy, analyzing without it: {entry}", err=True)
+        return CacheOutcome(True, False, None, REASON_BUSY), fallback_location
+
+    if force_analysis:
+        discard_project(root, entry)
+        hit, reason = False, REASON_FORCED
+    else:
+        hit, reason = evaluate_entry(entry, request_fingerprint, versions)
+        if not hit:
+            # A project that failed validation is never reopened; rebuilding on
+            # top of it would silently mix two analyses.
+            discard_project(root, entry)
+
+    if not hit:
+        mark_incomplete(entry, request_fingerprint)
+    return CacheOutcome(True, hit, entry, reason), entry
+
+
 def decompile_binary(
     binary: Path,
     output: Path,
@@ -142,6 +358,18 @@ def decompile_binary(
     language: str | None = None,
     compiler: str | None = None,
     entry: str | None = None,
+    cache_enabled: bool = True,
+    cache_dir: Path | None = None,
+    resume: bool = False,
+    force_analysis: bool = False,
+    force_export: bool = False,
+    workers: int | None = None,
+    include: tuple[str, ...] | None = None,
+    exclude: tuple[str, ...] | None = None,
+    function: tuple[str, ...] | None = None,
+    gdt: tuple[str, ...] | None = None,
+    gzf: bool = False,
+    semgrep_config: str | None = None,
 ) -> None:
     """Decompile a binary and write structured output."""
     binary = binary.resolve()
@@ -160,16 +388,34 @@ def decompile_binary(
     except ValueError as error:
         raise click.ClickException(str(error)) from error
 
+    # Archives are hashed into the analysis identity because applying one
+    # changes what the analyzer and decompiler produce.
+    gdt_identity = []
+    for raw in gdt or ():
+        path = Path(raw).expanduser().resolve()
+        if not path.is_file():
+            raise click.BadParameter(
+                f"Data type archive not found: {path}", param_hint="'--gdt'"
+            )
+        gdt_identity.append({"path": str(path), "sha256": sha256_file(path)})
+
     requested_analysis = {
         "base_address": base_addr,
         "entry_point": entry,
         "language": language,
         "compiler": compiler,
+        "data_type_archives": gdt_identity,
     }
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent)
-    )
-    try:
+    # Validated before Ghidra starts: a typo in a pattern should fail in
+    # milliseconds, not after a full analysis.
+    filters = {"include": include, "exclude": exclude, "function": function}
+    compile_filters(include, exclude)
+    staging = Path(tempfile.mkdtemp(prefix=staging_prefix(output), dir=output.parent))
+    with ExitStack() as run_stack:
+        # Registered first so it runs last: the staging lock is released before
+        # the directory it guards is removed.
+        run_stack.callback(shutil.rmtree, staging, ignore_errors=True)
+        run_stack.enter_context(staging_lock(staging))
         with tempfile.TemporaryDirectory(prefix="ghidra-decomp-") as workspace:
             input_dir = Path(workspace) / "input"
             project_dir = Path(workspace) / "project"
@@ -189,10 +435,33 @@ def decompile_binary(
             )
 
             pyghidra = _start_pyghidra(ghidra_path)
+            pyghidra_version = getattr(pyghidra, "__version__", "unknown")
+
+            from ghidra.framework import Application
+
+            versions = resolved_versions(
+                ghidra_version=str(Application.getApplicationVersion()),
+                pyghidra_version=pyghidra_version,
+                exporter_version=__version__,
+            )
+            cache_outcome, project_location = _prepare_cache(
+                run_stack,
+                cache_enabled=cache_enabled,
+                cache_dir=cache_dir,
+                request_fingerprint=request_fingerprint,
+                versions=versions,
+                force_analysis=force_analysis,
+                fallback_location=project_dir,
+            )
+
+            resume_index: dict[str, dict] = {}
+            if resume and not force_export:
+                resume_index = load_resume_index(output, request_fingerprint, filters)
+
             open_kwargs: dict[str, object] = {
                 "analyze": False,
-                "project_location": str(project_dir),
-                "project_name": "project",
+                "project_location": str(project_location),
+                "project_name": PROJECT_NAME,
             }
             if language is not None:
                 open_kwargs["language"] = language
@@ -225,13 +494,21 @@ def decompile_binary(
 
             with stack:
                 program = flat_api.getCurrentProgram()
-                if base_addr is not None:
-                    _rebase_program(program, base_addr)
+                if cache_outcome.hit:
+                    # The retained project already holds the rebase, the entry
+                    # point, and the analysis this fingerprint describes.
+                    click.echo(f"Reusing cached analysis: {cache_outcome.path}")
+                else:
+                    if base_addr is not None:
+                        _rebase_program(program, base_addr)
 
-                if entry is not None:
-                    _mark_entry(program, flat_api, entry)
+                    if entry is not None:
+                        _mark_entry(program, flat_api, entry)
 
-                _run_analysis(program, flat_api)
+                    if gdt:
+                        _apply_gdts(program, gdt)
+
+                    _run_analysis(program, flat_api)
                 _export_all(
                     program,
                     input_identity,
@@ -240,7 +517,24 @@ def decompile_binary(
                     combined=combined,
                     requested_analysis=requested_analysis,
                     request_fingerprint=request_fingerprint,
-                    pyghidra_version=getattr(pyghidra, "__version__", "unknown"),
+                    pyghidra_version=pyghidra_version,
+                    workers=workers if workers is not None else default_workers(),
+                    filters=filters,
+                    gzf=gzf,
+                    semgrep_config=semgrep_config,
+                    resume_index=resume_index,
+                    resume_source=output if resume_index else None,
+                    cache_block=cache_outcome.as_manifest_block(),
+                )
+
+            # The project only becomes durable when pyghidra closes it, so an
+            # entry is advertised as reusable strictly after that point.
+            if cache_outcome.path is not None and not cache_outcome.hit:
+                mark_complete(
+                    cache_outcome.path,
+                    request_fingerprint,
+                    versions,
+                    requested_analysis,
                 )
 
         try:
@@ -252,9 +546,6 @@ def decompile_binary(
                 f"Warning: published corpus but could not remove backup {leftover_backup}",
                 err=True,
             )
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
 
 
 def _parse_address(program, value: str, *, label: str, param_hint: str):
@@ -334,6 +625,99 @@ def _mark_entry(program, flat_api, entry: str) -> None:
         program.endTransaction(tid, success)
 
 
+def _apply_gdts(program, gdt_paths: tuple[str, ...]) -> list[dict]:
+    """Load archive data types into the program before analysis.
+
+    Applying an archive changes what the analyzer and decompiler produce, so it
+    is part of the analysis identity, not an export option.
+    """
+    from ghidra.program.model.data import DataTypeConflictHandler, FileDataTypeManager
+    from ghidra.util.task import ConsoleTaskMonitor
+    from java.io import File as JavaFile
+
+    monitor = ConsoleTaskMonitor()
+    applied = []
+    dtm = program.getDataTypeManager()
+    for raw in gdt_paths:
+        path = Path(raw).expanduser().resolve()
+        if not path.is_file():
+            raise click.BadParameter(
+                f"Data type archive not found: {path}", param_hint="'--gdt'"
+            )
+        click.echo(f"Applying data type archive: {path}")
+        archive = FileDataTypeManager.openFileArchive(JavaFile(str(path)), False)
+        success = False
+        tid = program.startTransaction(f"Apply {path.name}")
+        try:
+            dtm.addDataTypes(
+                list(archive.getAllDataTypes()),
+                DataTypeConflictHandler.REPLACE_HANDLER,
+                monitor,
+            )
+            success = True
+        finally:
+            program.endTransaction(tid, success)
+            archive.close()
+        applied.append({"path": str(path), "sha256": sha256_file(path)})
+    return applied
+
+
+def _export_gzf(program, destination: Path) -> None:
+    """Write a Ghidra zip file so the analyzed program can be reopened in the GUI.
+
+    `DomainFile.packFile` is used rather than `GzfExporter`. Auto-analysis leaves
+    a database transaction open for the lifetime of the program, and the
+    exporter's own locking rejects that with "Unable to lock due to active
+    transaction"; packing the domain file does not take that lock.
+    """
+    from ghidra.util.task import ConsoleTaskMonitor
+    from java.io import File as JavaFile
+
+    domain_file = program.getDomainFile()
+    if domain_file is None:
+        raise click.ClickException(
+            "The program has no domain file, so no GZF export is possible."
+        )
+    try:
+        domain_file.packFile(JavaFile(str(destination)), ConsoleTaskMonitor())
+    except Exception as e:  # noqa: BLE001 - Java exceptions have no stable base class
+        raise click.ClickException(f"Ghidra could not write {destination}: {e}")
+
+
+def _run_semgrep(config: str, corpus: Path, destination: Path) -> dict:
+    """Scan the exported pseudocode, writing SARIF beside the corpus.
+
+    A scan failure is reported but never invalidates the corpus: the pseudocode
+    is the product, and the scan is a secondary view of it.
+    """
+    import subprocess
+
+    command = [
+        "semgrep",
+        "scan",
+        "--config",
+        config,
+        "--sarif",
+        "--sarif-output",
+        str(destination),
+        "--quiet",
+        str(corpus / "functions"),
+    ]
+    click.echo(f"Scanning pseudocode with semgrep --config {config}")
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        raise click.ClickException(
+            "semgrep is not installed. Install it with: pip install semgrep"
+        )
+    if not destination.is_file():
+        raise click.ClickException(
+            f"semgrep produced no SARIF output (exit {result.returncode}):\n"
+            f"{result.stderr.strip()}"
+        )
+    return {"config": config, "exit_code": result.returncode}
+
+
 def _run_analysis(program, flat_api) -> None:
     """Run Ghidra's auto-analysis on the program."""
     click.echo("Running auto-analysis...")
@@ -346,6 +730,151 @@ def _run_analysis(program, flat_api) -> None:
         program.endTransaction(tid, success)
 
 
+def compile_filters(
+    include: tuple[str, ...] | None, exclude: tuple[str, ...] | None
+) -> tuple[list[re.Pattern], list[re.Pattern]]:
+    """Compile name filters, reporting a bad pattern as a usage error."""
+    compiled = []
+    for option, patterns in (("--include", include), ("--exclude", exclude)):
+        collected = []
+        for pattern in patterns or ():
+            try:
+                collected.append(re.compile(pattern))
+            except re.error as error:
+                raise click.BadParameter(
+                    f"Invalid regular expression {pattern!r}: {error}",
+                    param_hint=f"'{option}'",
+                )
+        compiled.append(collected)
+    return compiled[0], compiled[1]
+
+
+def _selected_by_name(
+    name: str, include: list[re.Pattern], exclude: list[re.Pattern]
+) -> bool:
+    """Apply include-then-exclude semantics to one function name."""
+    if include and not any(pattern.search(name) for pattern in include):
+        return False
+    return not any(pattern.search(name) for pattern in exclude)
+
+
+def select_functions(
+    functions: list,
+    *,
+    include: list[re.Pattern] | None = None,
+    exclude: list[re.Pattern] | None = None,
+    addresses: set[str] | None = None,
+) -> list:
+    """Narrow the discovered functions to those the run asked for.
+
+    With no filters every function is kept. `--function` is a union with the
+    name filters: an explicitly named address is always exported.
+    """
+    include = include or []
+    exclude = exclude or []
+    addresses = addresses or set()
+    if not include and not exclude and not addresses:
+        return list(functions)
+
+    selected = []
+    for func in functions:
+        address = func.getEntryPoint().toString()
+        if address in addresses or _selected_by_name(func.getName(), include, exclude):
+            selected.append(func)
+    return selected
+
+
+def default_workers() -> int:
+    """Choose a conservative worker count.
+
+    JVM heap, not CPU count, is the binding constraint on a large binary, so
+    this deliberately does not scale with every available core.
+    """
+    return min(4, os.cpu_count() or 1)
+
+
+def _decompile_one(decomp, monitor, func, timeout: int) -> tuple[str, str | None, str]:
+    """Decompile one function, returning its outcome, error, and C output."""
+    try:
+        result = decomp.decompileFunction(func, timeout, monitor)
+    except Exception as e:  # noqa: BLE001 - isolate function failures
+        return STATUS_FAILED, f"exception: {e}", ""
+
+    if result and result.decompileCompleted():
+        decomp_func = result.getDecompiledFunction()
+        c_code = decomp_func.getC() if decomp_func else None
+        if c_code:
+            return STATUS_SUCCESS, None, str(c_code)
+        return STATUS_FALLBACK, "decompiler returned no C output", ""
+
+    error = (
+        result.getErrorMessage() if result is not None else None
+    ) or "decompilation did not complete"
+    # A decompiler that ran out of time did not decline the function; it is
+    # retryable and must not be reported as a settled fallback.
+    status = STATUS_FAILED if _is_timeout_error(error) else STATUS_FALLBACK
+    return status, str(error), ""
+
+
+def _decompile_functions(
+    program, functions: list, timeout: int, workers: int
+) -> dict[str, tuple[str, str | None, str]]:
+    """Decompile every function, keyed by entry address.
+
+    Each worker owns one `DecompInterface`; an interface is never shared across
+    threads. Results are collected into a mapping so the caller can write them
+    back in address order, keeping output independent of completion order.
+    """
+    from ghidra.app.decompiler import DecompInterface
+    from ghidra.util.task import ConsoleTaskMonitor
+
+    local = threading.local()
+    opened: list = []
+    opened_lock = threading.Lock()
+
+    def interface():
+        existing = getattr(local, "decomp", None)
+        if existing is None:
+            existing = DecompInterface()
+            existing.openProgram(program)
+            local.decomp = existing
+            local.monitor = ConsoleTaskMonitor()
+            with opened_lock:
+                opened.append(existing)
+        return existing, local.monitor
+
+    def work(func):
+        decomp, monitor = interface()
+        return (
+            func.getEntryPoint().toString(),
+            _decompile_one(decomp, monitor, func, timeout),
+        )
+
+    results: dict[str, tuple[str, str | None, str]] = {}
+    try:
+        if workers <= 1:
+            with click.progressbar(
+                functions, label="Decompiling", show_pos=True
+            ) as bar:
+                for func in bar:
+                    address, outcome = work(func)
+                    results[address] = outcome
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                pending = [pool.submit(work, func) for func in functions]
+                with click.progressbar(
+                    length=len(pending), label="Decompiling", show_pos=True
+                ) as bar:
+                    for future in as_completed(pending):
+                        address, outcome = future.result()
+                        results[address] = outcome
+                        bar.update(1)
+    finally:
+        for decomp in opened:
+            decomp.dispose()
+    return results
+
+
 def _export_all(
     program,
     input_identity: dict,
@@ -356,21 +885,34 @@ def _export_all(
     requested_analysis: dict,
     request_fingerprint: dict,
     pyghidra_version: str,
+    workers: int = 1,
+    filters: dict,
+    gzf: bool = False,
+    semgrep_config: str | None = None,
+    resume_index: dict[str, dict] | None = None,
+    resume_source: Path | None = None,
+    cache_block: dict | None = None,
 ) -> None:
     """Run all exports against an open Ghidra program."""
-    from ghidra.app.decompiler import DecompInterface
     from ghidra.framework import Application
-    from ghidra.util.task import ConsoleTaskMonitor
 
-    monitor = ConsoleTaskMonitor()
     func_dir = output / "functions"
     assembly_dir = output / "assembly"
     for artifact_dir in (func_dir, assembly_dir):
         artifact_dir.mkdir()
 
     fm = program.getFunctionManager()
-    functions = list(fm.getFunctions(True))
+    discovered = list(fm.getFunctions(True))
+    include, exclude = compile_filters(filters.get("include"), filters.get("exclude"))
+    functions = select_functions(
+        discovered,
+        include=include,
+        exclude=exclude,
+        addresses=set(filters.get("function") or ()),
+    )
     total = len(functions)
+    if total != len(discovered):
+        click.echo(f"Filtered to {total} of {len(discovered)} discovered functions")
     strings = _extract_strings(program)
     imports = _extract_imports(program)
     exports = _extract_exports(program)
@@ -383,92 +925,112 @@ def _export_all(
         symbol_addresses.setdefault(item["address"], []).append(item)
 
     click.echo(f"Functions: {total}")
+    reusable = resume_index or {}
+    if reusable:
+        click.echo(f"Reusable functions from the previous corpus: {len(reusable)}")
     records: list[dict] = []
     record_by_address: dict[str, dict] = {}
 
-    decomp = DecompInterface()
-    try:
-        decomp.openProgram(program)
-        with click.progressbar(functions, label="Decompiling", show_pos=True) as bar:
-            for func in bar:
-                addr = func.getEntryPoint().toString()
-                name = func.getName()
-                stem = _artifact_stem(addr, name)
-                c_path = func_dir / f"{stem}.c"
-                assembly_path = assembly_dir / f"{stem}.s"
-                header = _func_header_comment(func)
-                assembly = _disassemble_function(program, func)
-                atomic_write_text(assembly_path, assembly)
+    pending = [
+        func
+        for func in functions
+        if _artifact_stem(func.getEntryPoint().toString(), func.getName())
+        not in reusable
+    ]
+    outcomes = _decompile_functions(program, pending, timeout, workers)
 
-                status = "fallback"
-                error = None
-                if not assembly:
-                    error = "function contains no instructions"
-                    content = header + _failure_comment(error)
-                else:
-                    try:
-                        result = decomp.decompileFunction(func, timeout, monitor)
-                        if result and result.decompileCompleted():
-                            decomp_func = result.getDecompiledFunction()
-                            c_code = decomp_func.getC() if decomp_func else None
-                            if c_code:
-                                content = header + c_code
-                                status = "success"
-                            else:
-                                error = "decompiler returned no C output"
-                                content = header + _failure_comment(error)
-                        else:
-                            error = (
-                                result.getErrorMessage() if result is not None else None
-                            ) or "decompilation did not complete"
-                            content = header + _failure_comment(error)
-                    except Exception as e:  # noqa: BLE001 - isolate function failures
-                        click.echo(
-                            f"\nWarning: error decompiling {name} at {addr}: {e}",
-                            err=True,
-                        )
-                        error = f"exception: {e}"
-                        content = header + _failure_comment(error)
+    # Writing artifacts and reading Ghidra metadata stay serial and in
+    # address order, so the corpus is identical for any worker count.
+    for func in functions:
+        addr = func.getEntryPoint().toString()
+        name = func.getName()
+        stem = _artifact_stem(addr, name)
+        c_path = func_dir / f"{stem}.c"
+        assembly_path = assembly_dir / f"{stem}.s"
 
-                atomic_write_text(c_path, content)
-                references, calls = _extract_function_references(program, func)
-                record = _extract_function_record(program, func)
-                related_strings = {
-                    ref["to_address"]: string_addresses[ref["to_address"]]
-                    for ref in references
-                    if ref["to_address"] in string_addresses
-                }
-                related_globals = {
-                    (
-                        symbol["address"],
-                        symbol["name"],
-                        symbol["namespace"],
-                        symbol["type"],
-                    ): symbol
-                    for ref in references
-                    for symbol in symbol_addresses.get(ref["to_address"], ())
-                }
-                record.update(
-                    {
-                        "schema_version": SCHEMA_VERSION,
-                        "calls": calls,
-                        "called_by": [],
-                        "references": references,
-                        "strings": list(related_strings.values()),
-                        "globals": list(related_globals.values()),
-                        "artifacts": {
-                            "pseudocode": str(c_path.relative_to(output)),
-                            "pseudocode_sha256": sha256_file(c_path),
-                            "assembly": str(assembly_path.relative_to(output)),
-                            "assembly_sha256": sha256_file(assembly_path),
-                        },
-                        "decompilation": {"status": status, "error": error},
-                    }
-                )
-                records.append(record)
-                record_by_address[addr] = record
-    finally:
-        decomp.dispose()
+        reused = reusable.get(stem)
+        if reused is not None and resume_source is not None:
+            shutil.copyfile(resume_source / reused["artifacts"]["pseudocode"], c_path)
+            shutil.copyfile(
+                resume_source / reused["artifacts"]["assembly"], assembly_path
+            )
+            record = dict(reused)
+            record["decompilation"] = {
+                **record["decompilation"],
+                "reused": True,
+            }
+            # Callers are rebuilt below from this run's call edges, so a
+            # stale list must not survive into the new corpus.
+            record["called_by"] = []
+            records.append(record)
+            record_by_address[addr] = record
+            continue
+
+        header = _func_header_comment(func)
+        assembly = _disassemble_function(program, func)
+        atomic_write_text(assembly_path, assembly)
+
+        status: str
+        error: str | None
+        if not assembly:
+            # An empty body settles the outcome regardless of what the
+            # decompiler reported for it.
+            status = STATUS_FALLBACK
+            error = "function contains no instructions"
+            content = header + _failure_comment(error)
+        else:
+            status, error, c_code = outcomes[addr]
+            if status == STATUS_SUCCESS:
+                content = header + c_code
+            else:
+                if status == STATUS_FAILED:
+                    click.echo(
+                        f"\nWarning: could not decompile {name} at {addr}: {error}",
+                        err=True,
+                    )
+                content = header + _failure_comment(error)
+
+        atomic_write_text(c_path, content)
+        references, calls = _extract_function_references(program, func)
+        record = _extract_function_record(program, func)
+        related_strings = {
+            ref["to_address"]: string_addresses[ref["to_address"]]
+            for ref in references
+            if ref["to_address"] in string_addresses
+        }
+        related_globals = {
+            (
+                symbol["address"],
+                symbol["name"],
+                symbol["namespace"],
+                symbol["type"],
+            ): symbol
+            for ref in references
+            for symbol in symbol_addresses.get(ref["to_address"], ())
+        }
+        record.update(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "calls": calls,
+                "called_by": [],
+                "references": references,
+                "strings": list(related_strings.values()),
+                "globals": list(related_globals.values()),
+                "artifacts": {
+                    "pseudocode": str(c_path.relative_to(output)),
+                    "pseudocode_sha256": sha256_file(c_path),
+                    "assembly": str(assembly_path.relative_to(output)),
+                    "assembly_sha256": sha256_file(assembly_path),
+                },
+                "decompilation": {
+                    "status": status,
+                    "error": error,
+                    "reused": False,
+                },
+            }
+        )
+        records.append(record)
+        record_by_address[addr] = record
 
     for caller in records:
         for call in caller["calls"]:
@@ -524,16 +1086,7 @@ def _export_all(
         combined_path.unlink()
 
     lang = program.getLanguage()
-    fallback_count = sum(
-        record["decompilation"]["status"] == "fallback" for record in records
-    )
-    counts = {
-        "discovered": total,
-        "successful": total - fallback_count,
-        "fallback": fallback_count,
-        "failed": 0,
-        "skipped": 0,
-    }
+    counts = _summarize_statuses(records)
     metadata = {
         "binary": input_identity["path"],
         "format": program.getExecutableFormat(),
@@ -543,14 +1096,11 @@ def _export_all(
         "image_base": program.getImageBase().toString(),
         "num_functions": total,
         "num_successful": counts["successful"],
-        "num_fallback": fallback_count,
-        "num_failed": 0,
-        "fallback_functions": [
-            record["address"]
-            for record in records
-            if record["decompilation"]["status"] == "fallback"
-        ],
-        "failed_functions": [],
+        "num_fallback": counts["fallback"],
+        "num_failed": counts["failed"],
+        "num_skipped": counts["skipped"],
+        "fallback_functions": _addresses_with_status(records, STATUS_FALLBACK),
+        "failed_functions": _addresses_with_status(records, STATUS_FAILED),
         "counts": counts,
     }
     callgraph = {
@@ -598,6 +1148,20 @@ def _export_all(
     indexed_paths = [output / name for name in indexes] + [output / "xrefs.jsonl"]
     if combined:
         indexed_paths.append(combined_path)
+
+    secondary: dict = {}
+    if gzf:
+        gzf_path = output / "program.gzf"
+        _export_gzf(program, gzf_path)
+        indexed_paths.append(gzf_path)
+        secondary["gzf"] = str(gzf_path.relative_to(output))
+    if semgrep_config:
+        sarif_path = output / "semgrep.sarif"
+        secondary["semgrep"] = {
+            **_run_semgrep(semgrep_config, output, sarif_path),
+            "path": str(sarif_path.relative_to(output)),
+        }
+        indexed_paths.append(sarif_path)
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "status": "complete",
@@ -613,7 +1177,17 @@ def _export_all(
             "ghidra_version": ghidra_version,
         },
         "analysis": actual_analysis,
-        "export": {"timeout": timeout, "workers": 1, "combined": combined},
+        "cache": cache_block
+        or {"enabled": False, "hit": False, "path": None, "reason": "caching disabled"},
+        "export": {
+            "timeout": timeout,
+            "workers": workers,
+            "combined": combined,
+            "resumed": bool(reusable),
+            "filters": normalize_filters(filters),
+            "discovered_before_filters": len(discovered),
+            "secondary_products": secondary,
+        },
         "counts": counts,
         "indexes": {
             str(path.relative_to(output)): {
@@ -629,7 +1203,9 @@ def _export_all(
     atomic_write_json(output / "manifest.json", manifest)
 
     click.echo(
-        f"Wrote {total - fallback_count} functions, "
+        f"Wrote {counts['successful']} functions, "
+        f"{counts['fallback']} fallback, "
+        f"{counts['failed']} failed, "
         f"{len(strings)} strings, "
         f"{len(imports)} imports, "
         f"{len(exports)} exports, "
@@ -877,13 +1453,14 @@ def _extract_strings(program) -> list[dict]:
 
     for data in listing.getDefinedData(True):
         dt = data.getDataType()
-        if not isinstance(dt, AbstractStringDataType):
-            continue
-
-        addr = data.getAddress()
         value = data.getValue()
-        if value is None:
+        # DWARF commonly materializes literals as char arrays whose value is already
+        # decoded even though their datatype is not AbstractStringDataType.
+        if value is None or (
+            not isinstance(dt, AbstractStringDataType) and not isinstance(value, str)
+        ):
             continue
+        addr = data.getAddress()
         if isinstance(value, (bytes, bytearray)):
             value = value.decode("utf-8", errors="replace")
         else:
@@ -943,22 +1520,31 @@ def _extract_imports(program) -> list[dict]:
 
 
 def _extract_exports(program) -> list[dict]:
-    """Extract exported symbols (entry points)."""
+    """Extract one primary or global symbol for each exported entry point."""
     symbol_table = program.getSymbolTable()
-    exports = []
+    exports: dict[str, tuple[bool, bool, dict]] = {}
 
     for symbol in symbol_table.getAllSymbols(True):
-        if symbol.isExternalEntryPoint():
-            exports.append(
-                {
-                    "name": symbol.getName(),
-                    "address": symbol.getAddress().toString(),
-                    "namespace": symbol.getParentNamespace().getName(True),
-                    "is_primary": symbol.isPrimary(),
-                }
-            )
+        if not symbol.isExternalEntryPoint():
+            continue
 
-    return exports
+        address = symbol.getAddress().toString()
+        namespace = symbol.getParentNamespace()
+        candidate = (
+            namespace.isGlobal(),
+            symbol.isPrimary(),
+            {
+                "name": symbol.getName(),
+                "address": address,
+                "namespace": namespace.getName(True),
+                "is_primary": symbol.isPrimary(),
+            },
+        )
+        current = exports.get(address)
+        if current is None or candidate[:2] > current[:2]:
+            exports[address] = candidate
+
+    return [candidate[2] for candidate in exports.values()]
 
 
 def _extract_entry_points(program) -> list[str]:

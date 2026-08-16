@@ -16,8 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CORPUS_OWNER = "ghidra-decomp"
+
+# Ownership and reuse are different questions. Ownership answers "did this tool
+# write the directory, so may it be replaced"; reuse answers "is the corpus
+# current enough to skip work". Older schemas stay replaceable so a version bump
+# never strands a corpus this tool produced.
+OWNED_SCHEMA_VERSIONS = frozenset({2, SCHEMA_VERSION})
 
 
 @dataclass(frozen=True)
@@ -134,7 +140,7 @@ def _owned_complete_manifest(output: Path) -> bool:
         return False
     return (
         isinstance(manifest, dict)
-        and manifest.get("schema_version") == SCHEMA_VERSION
+        and manifest.get("schema_version") in OWNED_SCHEMA_VERSIONS
         and manifest.get("status") == "complete"
         and isinstance(manifest.get("tool"), dict)
         and manifest["tool"].get("name") == CORPUS_OWNER
@@ -145,33 +151,71 @@ def _owned_complete_manifest(output: Path) -> bool:
     )
 
 
+def _acquire_lock(descriptor: int, *, blocking: bool) -> bool:
+    """Take an exclusive lock on an open descriptor, honoring the platform API."""
+    if os.name == "nt":
+        msvcrt = importlib.import_module("msvcrt")
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"\0")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+        try:
+            msvcrt.locking(descriptor, mode, 1)
+        except OSError:
+            if blocking:
+                raise
+            return False
+        return True
+
+    import fcntl
+
+    flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+    try:
+        fcntl.flock(descriptor, flags)
+    except OSError:
+        if blocking:
+            raise
+        return False
+    return True
+
+
+def _release_lock(descriptor: int) -> None:
+    """Release a lock taken by `_acquire_lock`."""
+    if os.name == "nt":
+        msvcrt = importlib.import_module("msvcrt")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
+@contextmanager
+def file_lock(lock_path: Path, *, blocking: bool = True):
+    """Hold an exclusive lock on a lock file, yielding whether it was taken.
+
+    A blocking caller always receives True. A non-blocking caller receives False
+    when another holder owns the lock and must not touch what the lock guards.
+    """
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    acquired = False
+    try:
+        acquired = _acquire_lock(descriptor, blocking=blocking)
+        yield acquired
+    finally:
+        if acquired:
+            _release_lock(descriptor)
+        os.close(descriptor)
+
+
 @contextmanager
 def destination_lock(output: Path):
     """Serialize publication and recovery for one destination."""
-    lock_path = output.parent / f".{output.name}.lock"
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        if os.name == "nt":
-            msvcrt = importlib.import_module("msvcrt")
-
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            if os.fstat(descriptor).st_size == 0:
-                os.write(descriptor, b"\0")
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+    with file_lock(output.parent / f".{output.name}.lock"):
         yield
-    finally:
-        if os.name == "nt":
-            msvcrt = importlib.import_module("msvcrt")
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-        else:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
 
 
 def validate_destination(output: Path) -> DestinationState:
@@ -218,9 +262,71 @@ def _backup_generation(output: Path, backup: Path) -> int:
         return -1
 
 
+def staging_prefix(output: Path) -> str:
+    """Return the literal prefix shared by every staging sibling of an output."""
+    return f".{output.name}.staging-"
+
+
+def _staging_lock_path(staging: Path) -> Path:
+    """Return the ownership lock beside a staging directory.
+
+    The lock lives outside the staging tree so that publishing, which renames
+    staging onto the output path, never carries a lock file into the corpus.
+    """
+    return staging.parent / f"{staging.name}.lock"
+
+
+def _staging_directories(output: Path) -> list[Path]:
+    """Find staging siblings using a literal prefix, not a user-controlled glob."""
+    prefix = staging_prefix(output)
+    return [
+        path
+        for path in output.parent.iterdir()
+        if path.name.startswith(prefix) and path.is_dir()
+    ]
+
+
+@contextmanager
+def staging_lock(staging: Path):
+    """Hold ownership of a staging directory for the lifetime of a run."""
+    lock_path = _staging_lock_path(staging)
+    try:
+        with file_lock(lock_path, blocking=False) as acquired:
+            if not acquired:
+                raise ValueError(f"Staging directory is already owned: {staging}")
+            yield
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+def sweep_orphan_staging(output: Path) -> list[Path]:
+    """Remove staging siblings abandoned by a killed run.
+
+    A process killed during analysis never reaches its cleanup, so its hidden
+    staging directory survives. Staging is never publishable, so an abandoned
+    one is unreachable by definition. A concurrent live run still owns its
+    staging lock, so only directories whose lock can be taken are removed.
+    """
+    removed = []
+    for staging in _staging_directories(output):
+        lock_path = _staging_lock_path(staging)
+        with file_lock(lock_path, blocking=False) as acquired:
+            if not acquired:
+                continue
+            shutil.rmtree(staging, ignore_errors=True)
+            if not staging.exists():
+                removed.append(staging)
+        if not staging.exists():
+            lock_path.unlink(missing_ok=True)
+    if removed:
+        fsync_directory(output.parent)
+    return removed
+
+
 def recover_destination(output: Path) -> bool:
     """Restore an owned backup left by an interrupted publication."""
     with destination_lock(output):
+        sweep_orphan_staging(output)
         if output.exists():
             return False
         backups = _backup_directories(output)

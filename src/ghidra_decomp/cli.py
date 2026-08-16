@@ -74,6 +74,88 @@ from .decompiler import decompile_binary, list_languages
     default=False,
     help="List all available Ghidra language IDs and their compiler specs, then exit.",
 )
+@click.option(
+    "--no-cache",
+    "no_cache",
+    is_flag=True,
+    default=False,
+    help="Do not retain or reuse a Ghidra project. Every run re-imports and "
+    "re-analyzes the binary.",
+)
+@click.option(
+    "--cache-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Directory holding retained Ghidra projects. "
+    "Defaults to $XDG_CACHE_HOME/ghidra-decomp.",
+)
+@click.option(
+    "--resume",
+    is_flag=True,
+    default=False,
+    help="Reuse per-function artifacts from an existing output whose hashes "
+    "still match, re-running only missing, failed, and fallback functions.",
+)
+@click.option(
+    "--force-analysis",
+    "force_analysis",
+    is_flag=True,
+    default=False,
+    help="Ignore any retained project and analyze the binary again.",
+)
+@click.option(
+    "--force-export",
+    "force_export",
+    is_flag=True,
+    default=False,
+    help="Reuse the retained project but rebuild every artifact from scratch.",
+)
+@click.option(
+    "--workers",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Number of decompiler threads. Defaults to min(4, CPU count); JVM "
+    "memory, not CPU count, is usually the limit.",
+)
+@click.option(
+    "--include",
+    multiple=True,
+    help="Export only functions whose name matches this regular expression. "
+    "Repeatable; a function matching any pattern is kept.",
+)
+@click.option(
+    "--exclude",
+    multiple=True,
+    help="Skip functions whose name matches this regular expression. "
+    "Repeatable; applied after --include.",
+)
+@click.option(
+    "--gdt",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Apply a Ghidra data type archive (.gdt) before analysis. Repeatable; "
+    "changes the analysis, so it changes the cache key.",
+)
+@click.option(
+    "--gzf",
+    is_flag=True,
+    default=False,
+    help="Also export program.gzf so the analyzed program can be reopened in "
+    "the Ghidra GUI.",
+)
+@click.option(
+    "--semgrep-config",
+    "semgrep_config",
+    default=None,
+    help="Scan the exported pseudocode with semgrep after the corpus is built "
+    "and write semgrep.sarif (e.g. 'auto' or a rules path).",
+)
+@click.option(
+    "--function",
+    multiple=True,
+    help="Export the function at this entry address regardless of name "
+    "filters (e.g. 00101234). Repeatable.",
+)
 def main(
     binary: Path | None,
     output: Path | None,
@@ -85,6 +167,18 @@ def main(
     language: str | None,
     compiler: str | None,
     list_langs: bool,
+    no_cache: bool,
+    cache_dir: Path | None,
+    resume: bool,
+    force_analysis: bool,
+    force_export: bool,
+    workers: int | None,
+    include: tuple[str, ...],
+    exclude: tuple[str, ...],
+    function: tuple[str, ...],
+    gdt: tuple[Path, ...],
+    gzf: bool,
+    semgrep_config: str | None,
 ):
     """Decompile BINARY into a browsable source tree.
 
@@ -100,6 +194,9 @@ def main(
 
     if compiler is not None and language is None:
         raise click.UsageError("--compiler requires --language.")
+
+    if no_cache and cache_dir is not None:
+        raise click.UsageError("--cache-dir cannot be combined with --no-cache.")
 
     binary = binary.resolve()
     if output is None:
@@ -128,6 +225,18 @@ def main(
         entry=entry,
         language=language,
         compiler=compiler,
+        cache_enabled=not no_cache,
+        cache_dir=cache_dir,
+        resume=resume,
+        force_analysis=force_analysis,
+        force_export=force_export,
+        workers=workers,
+        include=include,
+        exclude=exclude,
+        function=function,
+        gdt=tuple(str(path) for path in gdt),
+        gzf=gzf,
+        semgrep_config=semgrep_config,
     )
 
     click.echo(f"\nDone. Output at: {output}")

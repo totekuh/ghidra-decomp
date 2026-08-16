@@ -17,7 +17,7 @@ Do not broadly scan `/home/witchtape`. Work inside this repository or another ex
 - CLI entry point: `ghidra-decomp = ghidra_decomp.cli:main`
 - Core implementation: `src/ghidra_decomp/decompiler.py`
 - Artifact helpers: `src/ghidra_decomp/artifacts.py`
-- End-to-end tests: `tests/test_e2e.py` and `tests/test_system_e2e.py`
+- End-to-end tests: `tests/test_e2e.py`, `tests/test_multiarch_e2e.py`, and `tests/test_system_e2e.py`
 - Milestone 1, artifact correctness, is complete, prepared for version 0.3.0, and covered by unit and live-Ghidra tests.
 - `ROADMAP.md` contains the remaining feature backlog and external-tool survey.
 
@@ -26,14 +26,17 @@ Do not broadly scan `/home/witchtape`. Work inside this repository or another ex
 ```text
 binary
   -> start embedded Ghidra through PyGhidra
-  -> import into an isolated writable temporary project
-  -> optional rebase and entry-point creation
-  -> run auto-analysis
-  -> serially decompile every discovered function
+  -> resolve the fingerprinted cache entry and take its ownership lock
+  -> reopen the retained project, or import into a fresh one on a miss
+  -> on a miss: optional rebase, entry-point creation, GDT application, auto-analysis
+  -> select functions through --include/--exclude/--function
+  -> decompile on a bounded thread pool, one DecompInterface per worker
+  -> reuse hash-valid per-function artifacts when --resume is given
   -> export C, assembly, sidecars, xrefs, and indexes in sibling staging
+  -> optional GZF export and semgrep SARIF scan
   -> publish manifest.json as the staged completion marker
   -> serialize replacement of the previous owned corpus
-  -> delete the temporary Ghidra project through ExitStack cleanup
+  -> mark the cache entry complete once the project is durable
 ```
 
 Current output:
@@ -57,16 +60,15 @@ Current output:
 `-- all_functions.c                 # only with --combined
 ```
 
-Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`, `--language`, `--compiler`, `--list-languages`, and `--ghidra-path`. `--timeout` must be positive and is no longer silently multiplied by retries.
+Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`, `--language`, `--compiler`, `--list-languages`, `--ghidra-path`, `--workers`, `--no-cache`, `--cache-dir`, `--resume`, `--force-analysis`, `--force-export`, `--include`, `--exclude`, `--function`, `--gdt`, `--gzf`, and `--semgrep-config`. `--timeout` must be positive and is never multiplied by retries or worker count.
 
 ## Verified weaknesses
 
 ### Performance
 
-- `_export_all()` uses one `DecompInterface` and processes functions serially.
-- Every invocation imports and analyzes the binary from scratch.
-- The temporary project is deleted after every run, preventing incremental analysis and writeback.
 - Per-function C, assembly, sidecars, and related global records may still produce a large corpus.
+- Resolved: decompilation runs on a bounded thread pool with one `DecompInterface` per worker.
+- Resolved: the analyzed project is retained under a fingerprinted cache entry and reused.
 
 ### Corpus quality
 
@@ -76,11 +78,12 @@ Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`
 
 ### Reliability
 
-- Interrupted staging is marked by `.run-state.json`; a previous complete corpus remains valid, but function-level resume is not implemented.
-- Existing valid per-function artifacts are rebuilt rather than hash-validated and reused.
-- The fingerprint is recorded but is not yet used as a project or output cache key.
-- A process killed during analysis can leave a hidden sibling staging directory that currently requires manual cleanup.
 - Replacing an existing output uses two serialized directory renames, so readers can briefly observe the output path as absent.
+- Writeback into a persistent Ghidra project (renames, types, comments, patches) is still absent.
+- Symbol-server/PDB resolution and BSim export are still absent; both need infrastructure this repository has no fixture for.
+- Resolved: `--resume` hash-validates and reuses per-function artifacts.
+- Resolved: the complete fingerprint is the cache key.
+- Resolved: an abandoned staging directory is swept on the next run, and a live run's staging is protected by an ownership lock.
 
 ## Current artifact contract
 
@@ -109,7 +112,7 @@ Each function sidecar contains at least:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "name": "parse_config",
   "address": "00100234",
   "body_ranges": [{"start": "00100234", "end": "0010034f"}],
@@ -131,7 +134,8 @@ Each function sidecar contains at least:
   },
   "decompilation": {
     "status": "success",
-    "error": null
+    "error": null,
+    "reused": false
   }
 }
 ```
@@ -145,7 +149,9 @@ Call edges must include the call-site address, target address/name when resolved
 - Tool, PyGhidra, Ghidra, language, and compiler versions/IDs.
 - Image base, entry points, loader, and relevant analysis options.
 - Export options and timeout/worker settings.
-- Counts for discovered, successful, fallback, failed, and skipped functions.
+- Counts for discovered, successful, fallback, failed, and skipped functions. `successful`, `fallback`, and `failed` partition the discovered total; `skipped` counts the reused subset and overlaps them.
+- A `cache` block recording whether the analysis was reused and why.
+- Export filters, the pre-filter discovered count, and any secondary products.
 - Paths and hashes for generated indexes.
 
 Use a temporary run-state file inside sibling staging while work is incomplete. Publish `manifest.json` there only after all required indexes are durable, then replace only an ownership-validated destination under the publication lock.
@@ -166,34 +172,35 @@ Use a temporary run-state file inside sibling staging while work is incomplete. 
 
 Keep this milestone serial. Establish deterministic output before adding concurrency or reuse.
 
-### Milestone 2: resumable output and project reuse
+### Milestone 2: resumable output and project reuse (complete)
 
-- Derive a cache key from the complete input/analysis fingerprint, not a shortened digest or filename.
-- Retain a Ghidra project in an explicit cache location.
-- Reopen the project only when the fingerprint matches exactly.
-- Add `--resume`, `--force-analysis`, and `--force-export` semantics with clear separation.
-- Skip a function only when its sidecar says success and its artifact hashes still match.
-- Retry fallback and failed functions without rebuilding valid output.
-- Put project cleanup in `finally`; never delete an unrelated directory inferred from output paths.
+- [x] Derive a cache key from the complete input/analysis fingerprint, not a shortened digest or filename.
+- [x] Retain a Ghidra project in an explicit cache location (`$XDG_CACHE_HOME/ghidra-decomp/<fingerprint>/`).
+- [x] Reopen the project only when the fingerprint and every resolved version match exactly.
+- [x] Add `--resume`, `--force-analysis`, and `--force-export` semantics with clear separation.
+- [x] Skip a function only when its sidecar says success and its artifact hashes still match.
+- [x] Retry fallback and failed functions without rebuilding valid output.
+- [x] Put project cleanup in `finally`; never delete an unrelated directory inferred from output paths.
 
-### Milestone 3: bounded parallel decompilation
+### Milestone 3: bounded parallel decompilation (complete)
 
-- Add `--workers`, defaulting conservatively rather than blindly using every CPU.
-- Use one opened `DecompInterface` per worker; do not share one interface concurrently.
-- Keep Ghidra metadata extraction serial unless its APIs are proven safe for concurrent access.
-- Collect worker results and write deterministic indexes sorted by address.
-- Give each function a bounded timeout. Do not silently multiply the user-facing timeout.
-- Compare serial and parallel corpora for identical function status, pseudocode, sidecars, and indexes.
-- Benchmark wall time, peak JVM memory, and failure behavior on large binaries.
+- [x] Add `--workers`, defaulting to `min(4, CPU count)` rather than blindly using every CPU.
+- [x] Use one opened `DecompInterface` per worker; do not share one interface concurrently.
+- [x] Keep Ghidra metadata extraction serial. Only `decompileFunction` runs on the pool.
+- [x] Collect worker results and write deterministic indexes sorted by address.
+- [x] Give each function a bounded timeout. The user-facing timeout is never multiplied.
+- [x] Compare serial and parallel corpora for identical function status, pseudocode, sidecars, and indexes.
+- [ ] Benchmark wall time, peak JVM memory, and failure behavior on large binaries. The checked-in fixtures are too small to measure.
 
-### Milestone 4: analysis inputs and secondary products
+### Milestone 4: analysis inputs and secondary products (partial)
 
-- Add function-name/address filters and targeted re-export.
-- Add optional symbol-server/PDB resolution.
-- Add optional GDT application before analysis.
-- Add optional GZF and BSim output.
-- Add optional Semgrep scanning with SARIF output after corpus completion.
-- Evaluate `ghidra-cli` or MCP only for live queries and writeback.
+- [x] Add function-name/address filters and targeted re-export (`--include`, `--exclude`, `--function`).
+- [x] Add optional GDT application before analysis (`--gdt`), hashed into the analysis fingerprint.
+- [x] Add optional GZF output (`--gzf`). Written through `DomainFile.packFile`, because auto-analysis leaves a database transaction open that `GzfExporter` refuses to lock around.
+- [x] Add optional Semgrep scanning with SARIF output after corpus completion (`--semgrep-config`).
+- [ ] Add optional symbol-server/PDB resolution. Needs a PE fixture with a matching PDB and network access to a symbol server; neither exists in this repository.
+- [ ] Add optional BSim output. Needs a BSim database to sign into; out of scope without one.
+- [ ] Evaluate `ghidra-cli` or MCP only for live queries and writeback.
 
 ## External-tool conclusion
 
@@ -209,16 +216,20 @@ See `ROADMAP.md` for links and the complete survey table.
 
 - Implemented unit tests for fingerprinting, atomic writes, filename sanitization, positive timeout validation, and combined-output CLI forwarding.
 - Implemented fixture end-to-end assertions for per-function C, JSON, assembly, hashes, body ranges, and call-site addresses.
+- Implemented a checked-in, reproducible LLVM 21 fixture matrix for x86-32, ARMv7, AArch64, MIPS32LE, PowerPC32BE, and RISC-V64. Each target uses an exact Ghidra language/compiler ID and validates functions, complete assembly byte coverage, calls/xrefs, exports, symbols, strings, sidecars, fingerprints, and index hashes.
 - Implemented a system-binary integration test that decompiles the host's `true` executable and validates manifest/index hashes, sidecars, addressed assembly bytes, xrefs, storage metadata, stack frames, and combined output.
-- Verified locally against Ghidra 12.1: 59 tests pass.
+- Verified locally against Ghidra 12.1: 235 tests pass, 1 skipped (semgrep absent).
+
+- Implemented cache unit tests in `tests/test_cache.py`: key stability, every invalidation input, XDG resolution, entry locking, and the resume predicate.
+- Implemented parallel unit tests in `tests/test_parallel.py`: one interface per worker, never shared across threads, timeout never multiplied, and isolated per-function failures.
+- Implemented filter unit tests in `tests/test_filters.py`.
+- Implemented cache and resume end-to-end tests in `tests/test_cache_e2e.py`, including the determinism gate comparing `--workers 1` against `--workers 4`.
+- Shared e2e helpers live in `tests/conftest.py`.
 
 Remaining tests:
 
-- Interrupted-run and resume tests proving stale top-level indexes are never published.
-- Cache invalidation tests for changed bytes, base, entry, language, compiler, Ghidra version, and export schema.
-- Failed-function tests covering timeout, fallback assembly, retry, and later resume.
-- Determinism tests comparing serial and parallel output after removing intentionally variable timestamps.
-- A non-contiguous function-body fixture or targeted unit test.
+- Failed-function tests covering a real decompiler timeout, then retry on a later resume. The current coverage fakes the timeout because no checked-in fixture reliably exceeds a bounded timeout.
+- A large-binary benchmark for the parallel path.
 
 Existing local verification commands:
 
@@ -229,16 +240,15 @@ mypy src/ghidra_decomp/ --ignore-missing-imports
 pytest tests/
 ```
 
-The end-to-end suite requires Ghidra 12+ and can take several minutes. CI installs the project and test dependency, then runs the fast unit/CLI tests in addition to formatting, linting, and type checking, but not the real Ghidra suite.
+The end-to-end suite requires Ghidra 12+ and can take several minutes. CI installs the project and test dependency, then runs the fast unit/CLI and fixture-integrity tests in addition to formatting, linting, and type checking, but not the real Ghidra suite. Fixture regeneration is documented in `tests/fixtures/README.md`.
 
 ## Next coding slice
 
-Implement Milestone 2 without adding parallelism yet:
+Milestones 2 and 3 are complete and Milestone 4 is partial. What remains, in order of value:
 
-1. Define explicit cache and retained-project locations.
-2. Compare the complete stored fingerprint before reusing a project or corpus.
-3. Add `--resume`, `--force-analysis`, and `--force-export` with separate semantics.
-4. Validate successful sidecar and artifact hashes before skipping a function.
-5. Add interrupted-run, invalidation, and fallback retry tests.
-
-Do not add worker concurrency until resume and invalidation semantics are proven deterministic.
+1. Benchmark parallel decompilation on a large binary: wall time, peak JVM memory, and failure behavior. The checked-in fixtures have five functions each and cannot show the difference. Until this is measured, `--workers` defaults conservatively on purpose.
+2. Deepen type records with category paths, packing, alignment, provenance, and usage references.
+3. Export decompiler-only local variables, not just those Ghidra materializes on the function object.
+4. Close the publication gap where readers can briefly observe the output path as absent between the two renames.
+5. Add symbol-server/PDB resolution and BSim export once fixtures and infrastructure exist for them.
+6. Evaluate `ghidra-cli` or MCP for live queries and writeback into a persistent project.

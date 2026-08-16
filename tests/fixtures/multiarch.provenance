@@ -1,0 +1,17 @@
+format: 1
+source: tests/fixtures/multiarch.c
+source_sha256: 93e1044bd206cffa745a189695a521e801634524d63f9df1c979ae4ba59bbae1
+build_script: tests/fixtures/build_multiarch.sh
+build_script_sha256: 158c7b3fdfb38eb60aac2e6a143e3995cd082983f773ad19a2fa8ce33a1e6894
+compiler: Debian clang version 21.1.8 (7+b3)
+linker: Debian LLD 21.1.8 (compatible with GNU linkers)
+common_compile_flags: -O1 -g -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -ffile-prefix-map=<fixture-dir>=/fixture-src -fdebug-prefix-map=<fixture-dir>=/fixture-src -fmacro-prefix-map=<fixture-dir>=/fixture-src
+common_link_flags: -e entry --build-id=none
+path_mapping: <fixture-dir>=/fixture-src
+targets:
+  multiarch_x86_32: target=i386-none-elf; emulation=elf_i386; extra_flags=
+  multiarch_armv7: target=armv7-none-eabi; emulation=armelf; extra_flags=-mfloat-abi=soft
+  multiarch_aarch64: target=aarch64-none-elf; emulation=aarch64elf; extra_flags=
+  multiarch_mipsel: target=mipsel-none-elf; emulation=elf32ltsmip; extra_flags=
+  multiarch_ppc32: target=powerpc-none-elf; emulation=elf32ppc; extra_flags=
+  multiarch_riscv64: target=riscv64-none-elf; emulation=elf64lriscv; extra_flags=

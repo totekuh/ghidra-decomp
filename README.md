@@ -8,6 +8,8 @@ Takes a binary, runs Ghidra's decompiler on every function, and produces a direc
 
 Reverse engineering through Ghidra's GUI (or MCP) means looking at one function at a time. This tool dumps everything upfront so you can treat the binary like a normal codebase: grep for patterns, read call graphs, search strings — all without waiting for decompilation round-trips.
 
+The analyzed Ghidra project is retained and reused, so iterating on the same binary does not pay for analysis again. `--resume` rebuilds only the functions whose artifacts no longer match their recorded hashes.
+
 ## Install
 
 Requires [Ghidra](https://ghidra-sre.org/) 12.0+ and PyGhidra 3.0+.
@@ -93,7 +95,7 @@ ghidra-decomp ./dal_ivm.mod \
 
 ```
 firmware_decomp/
-├── manifest.json       # fingerprint, versions, completion status, artifact hashes
+├── manifest.json       # fingerprint, versions, cache decision, counts, artifact hashes
 ├── functions/
 │   ├── 00010000_<digest>_main.c
 │   ├── 00010000_<digest>_main.json
@@ -104,6 +106,8 @@ firmware_decomp/
 │   └── ...
 ├── xrefs.jsonl         # call-site-aware code and data references
 ├── all_functions.c     # optional; enabled with --combined
+├── program.gzf         # optional; enabled with --gzf
+├── semgrep.sarif       # optional; enabled with --semgrep-config
 ├── types.json          # recovered structs, enums, unions, typedefs
 ├── functions.json      # function index with address ranges + signatures
 ├── callgraph.json      # who calls who
@@ -120,7 +124,7 @@ ranges, signature and variable storage, calls, references, related strings and
 globals, decompilation status, artifact paths, and hashes. Assembly files contain
 instruction addresses, raw bytes, mnemonics, and operands.
 
-Schema 2 artifact filenames include a stable digest and bounded ASCII components so
+Schema 3 artifact filenames include a stable digest and bounded ASCII components so
 segmented addresses, long symbols, and platform-reserved names remain safe. Consumers
 must follow the artifact paths in `functions.json` rather than constructing filenames.
 
@@ -144,15 +148,23 @@ The existing completed output remains untouched if analysis fails. Publication i
 serialized by a destination lock and occurs only after the staged manifest, artifacts,
 and indexes are durable.
 
-Each function receives at most the configured `--timeout`. A failed decompilation is
-recorded as `fallback`; its C artifact contains the error while its normal assembly
-artifact remains available for analysis.
+Each function receives at most the configured `--timeout`, never multiplied by worker
+count or retries. A function that the decompiler declines is recorded as `fallback`; a
+timeout or exception is recorded as `failed`, which `--resume` retries on a later run.
+Either way the C artifact contains the error and the normal assembly artifact remains
+available for analysis.
+
+`successful`, `fallback`, and `failed` partition the discovered functions. `skipped`
+counts the reused subset and overlaps them: it answers how much work a run avoided,
+not how a function ended.
 
 ## Intended workflow
 
 1. **Dump** the binary with `ghidra-decomp`
 2. **Analyze** the output like source code — grep, glob, read
-3. **Write back** renames/annotations to Ghidra via MCP (separate tool)
+3. **Re-run** with `--resume`, or narrow to one function with `--include`/`--function`,
+   as the objective sharpens. The retained project means this is cheap.
+4. **Write back** renames/annotations to Ghidra via MCP (separate tool, not yet built)
 
 ## Development
 

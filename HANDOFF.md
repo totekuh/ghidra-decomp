@@ -17,8 +17,10 @@ Do not broadly scan `/home/witchtape`. Work inside this repository or another ex
 - CLI entry point: `ghidra-decomp = ghidra_decomp.cli:main`
 - Core implementation: `src/ghidra_decomp/decompiler.py`
 - Artifact helpers: `src/ghidra_decomp/artifacts.py`
-- End-to-end tests: `tests/test_e2e.py`, `tests/test_multiarch_e2e.py`, and `tests/test_system_e2e.py`
-- Milestone 1, artifact correctness, is complete, prepared for version 0.3.0, and covered by unit and live-Ghidra tests.
+- Analysis cache: `src/ghidra_decomp/cache.py`
+- Unit tests: `tests/test_artifacts.py`, `tests/test_cache.py`, `tests/test_decompiler_helpers.py`, `tests/test_filters.py`, `tests/test_parallel.py`
+- End-to-end tests: `tests/test_e2e.py`, `tests/test_cache_e2e.py`, `tests/test_multiarch_e2e.py`, and `tests/test_system_e2e.py`, with shared helpers in `tests/conftest.py`
+- Milestones 1 through 3 are complete and covered by unit and live-Ghidra tests. Milestone 4 is partial.
 - `ROADMAP.md` contains the remaining feature backlog and external-tool survey.
 
 ## Current pipeline
@@ -57,7 +59,9 @@ Current output:
 |-- exports.json
 |-- sections.json
 |-- metadata.json
-`-- all_functions.c                 # only with --combined
+|-- all_functions.c                 # only with --combined
+|-- program.gzf                     # only with --gzf
+`-- semgrep.sarif                   # only with --semgrep-config
 ```
 
 Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`, `--language`, `--compiler`, `--list-languages`, `--ghidra-path`, `--workers`, `--no-cache`, `--cache-dir`, `--resume`, `--force-analysis`, `--force-export`, `--include`, `--exclude`, `--function`, `--gdt`, `--gzf`, and `--semgrep-config`. `--timeout` must be positive and is never multiplied by retries or worker count.
@@ -105,7 +109,9 @@ Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`
 |-- exports.json
 |-- sections.json
 |-- metadata.json
-`-- all_functions.c          # optional
+|-- all_functions.c          # optional, --combined
+|-- program.gzf              # optional, --gzf
+`-- semgrep.sarif            # optional, --semgrep-config
 ```
 
 Each function sidecar contains at least:

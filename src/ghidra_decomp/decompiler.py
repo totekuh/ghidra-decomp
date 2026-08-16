@@ -225,6 +225,53 @@ def load_resume_index(
     return reusable
 
 
+def _thunk_target(func) -> dict | None:
+    """Resolve what a thunk forwards to, so it is not a dead end in the callgraph.
+
+    Returns None for a function that is not a thunk. A thunk whose target cannot
+    be resolved still returns the keys, with null values, so consumers see one
+    shape rather than having to test for a missing block.
+    """
+    if not func.isThunk():
+        return None
+    thunked = func.getThunkedFunction(True)
+    if thunked is None:
+        return {"name": None, "address": None}
+    return {
+        "name": thunked.getName(),
+        "address": thunked.getEntryPoint().toString(),
+    }
+
+
+def _decompiler_notes(c_code: str) -> list[dict]:
+    """Extract the decompiler's own block comments as structured records.
+
+    The decompiler reports where it gave up — an unknown calling convention, a
+    subroutine that does not return, a block it removed — inside `/* ... */`
+    comments in the C it emits. Left as prose those are invisible to a consumer
+    deciding how far to trust the pseudocode.
+
+    Only the decompiler uses block comments; this tool's own header and failure
+    lines are `//`, so nothing it wrote can be picked up here.
+    """
+    notes = []
+    for block in re.findall(r"/\*(.*?)\*/", c_code, re.DOTALL):
+        # A block may span lines, so collapse whitespace into one comparable string.
+        text = " ".join(block.split())
+        if not text:
+            continue
+        for prefix, kind in (
+            ("WARNING:", "warning"),
+            ("Unresolved local var:", "unresolved_local"),
+        ):
+            if text.startswith(prefix):
+                notes.append({"kind": kind, "text": text[len(prefix) :].strip()})
+                break
+        else:
+            notes.append({"kind": "note", "text": text})
+    return notes
+
+
 def _func_header_comment(func) -> str:
     """Build a metadata header comment for a decompiled function."""
     addr = func.getEntryPoint().toString()
@@ -793,19 +840,28 @@ def default_workers() -> int:
     return min(4, os.cpu_count() or 1)
 
 
-def _decompile_one(decomp, monitor, func, timeout: int) -> tuple[str, str | None, str]:
-    """Decompile one function, returning its outcome, error, and C output."""
+def _decompile_one(
+    decomp, monitor, func, timeout: int
+) -> tuple[str, str | None, str, list[dict]]:
+    """Decompile one function: outcome, error, C output, and its locals.
+
+    Locals are converted to plain dicts here rather than returned as Ghidra
+    objects, because the decompilation result belongs to the worker that
+    produced it and must not outlive this call.
+    """
     try:
         result = decomp.decompileFunction(func, timeout, monitor)
     except Exception as e:  # noqa: BLE001 - isolate function failures
-        return STATUS_FAILED, f"exception: {e}", ""
+        return STATUS_FAILED, f"exception: {e}", "", []
+
+    locals_ = _high_function_locals(result)
 
     if result and result.decompileCompleted():
         decomp_func = result.getDecompiledFunction()
         c_code = decomp_func.getC() if decomp_func else None
         if c_code:
-            return STATUS_SUCCESS, None, str(c_code)
-        return STATUS_FALLBACK, "decompiler returned no C output", ""
+            return STATUS_SUCCESS, None, str(c_code), locals_
+        return STATUS_FALLBACK, "decompiler returned no C output", "", locals_
 
     error = (
         result.getErrorMessage() if result is not None else None
@@ -813,12 +869,12 @@ def _decompile_one(decomp, monitor, func, timeout: int) -> tuple[str, str | None
     # A decompiler that ran out of time did not decline the function; it is
     # retryable and must not be reported as a settled fallback.
     status = STATUS_FAILED if _is_timeout_error(error) else STATUS_FALLBACK
-    return status, str(error), ""
+    return status, str(error), "", locals_
 
 
 def _decompile_functions(
     program, functions: list, timeout: int, workers: int
-) -> dict[str, tuple[str, str | None, str]]:
+) -> dict[str, tuple[str, str | None, str, list[dict]]]:
     """Decompile every function, keyed by entry address.
 
     Each worker owns one `DecompInterface`; an interface is never shared across
@@ -850,7 +906,7 @@ def _decompile_functions(
             _decompile_one(decomp, monitor, func, timeout),
         )
 
-    results: dict[str, tuple[str, str | None, str]] = {}
+    results: dict[str, tuple[str, str | None, str, list[dict]]] = {}
     try:
         if workers <= 1:
             with click.progressbar(
@@ -972,6 +1028,8 @@ def _export_all(
 
         status: str
         error: str | None
+        decompiled_locals: list[dict] = []
+        notes: list[dict] = []
         if not assembly:
             # An empty body settles the outcome regardless of what the
             # decompiler reported for it.
@@ -979,7 +1037,8 @@ def _export_all(
             error = "function contains no instructions"
             content = header + _failure_comment(error)
         else:
-            status, error, c_code = outcomes[addr]
+            status, error, c_code, decompiled_locals = outcomes[addr]
+            notes = _decompiler_notes(c_code)
             if status == STATUS_SUCCESS:
                 content = header + c_code
             else:
@@ -992,7 +1051,12 @@ def _export_all(
 
         atomic_write_text(c_path, content)
         references, calls = _extract_function_references(program, func)
-        record = _extract_function_record(program, func)
+        # An empty list means the decompiler produced no variables — for a failed
+        # or empty function that is not an answer, so fall back to Ghidra's view
+        # rather than discarding what it does know.
+        record = _extract_function_record(
+            program, func, locals_=decompiled_locals or None
+        )
         related_strings = {
             ref["to_address"]: string_addresses[ref["to_address"]]
             for ref in references
@@ -1026,6 +1090,7 @@ def _export_all(
                     "status": status,
                     "error": error,
                     "reused": False,
+                    "warnings": notes,
                 },
             }
         )
@@ -1328,10 +1393,8 @@ def _body_ranges(body) -> list[dict[str, str]]:
     ]
 
 
-def _variable_record(variable) -> dict:
-    """Extract a variable's type, storage, size, and provenance."""
-    data_type = variable.getDataType()
-    storage = variable.getVariableStorage()
+def _storage_record(storage) -> dict:
+    """Classify where a variable lives, identically for every variable kind."""
     storage_kind = "unassigned"
     register = None
     stack_offset = None
@@ -1349,15 +1412,67 @@ def _variable_record(variable) -> dict:
             storage_kind = "compound"
 
     return {
+        "kind": storage_kind,
+        "register": register,
+        "stack_offset": stack_offset,
+        "description": str(storage) if storage is not None else None,
+    }
+
+
+def _high_local_record(symbol) -> dict:
+    """Extract one local variable as the decompiler actually modelled it.
+
+    `Function.getLocalVariables()` only reports variables Ghidra materialized on
+    the function object, which is empty for most functions. The decompiler's own
+    symbol map holds the variables the pseudocode actually names, so this is what
+    lets a consumer type the `uVar1` it reads in the C.
+
+    `source` has no equivalent here; the key is kept as null so both variable
+    kinds serialize to one shape.
+    """
+    data_type = symbol.getDataType()
+    return {
+        "name": symbol.getName(),
+        "data_type": data_type.getName() if data_type else "undefined",
+        "size": symbol.getSize(),
+        "storage": _storage_record(symbol.getStorage()),
+        "source": None,
+    }
+
+
+def _high_function_locals(result) -> list[dict]:
+    """Collect the decompiler's local variables from a decompilation result.
+
+    Returns an empty list when no high function is available, which is the
+    normal outcome for a function that failed or was declined.
+    """
+    if result is None:
+        return []
+    high_function = result.getHighFunction()
+    if high_function is None:
+        return []
+    symbol_map = high_function.getLocalSymbolMap()
+    if symbol_map is None:
+        return []
+    return [
+        _high_local_record(symbol)
+        for symbol in symbol_map.getSymbols()
+        # Parameters keep coming from the function object, which carries their
+        # ordinal and provenance.
+        if not symbol.isParameter()
+    ]
+
+
+def _variable_record(variable) -> dict:
+    """Extract a variable's type, storage, size, and provenance."""
+    data_type = variable.getDataType()
+    storage = variable.getVariableStorage()
+
+    return {
         "name": variable.getName(),
         "data_type": data_type.getName() if data_type else "undefined",
         "size": variable.getLength(),
-        "storage": {
-            "kind": storage_kind,
-            "register": register,
-            "stack_offset": stack_offset,
-            "description": str(storage) if storage is not None else None,
-        },
+        "storage": _storage_record(storage),
         "source": str(variable.getSource()),
     }
 
@@ -1386,7 +1501,9 @@ def _function_aliases(function_name: str, symbols: list[dict]) -> list[str]:
     )
 
 
-def _extract_function_record(program, func) -> dict:
+def _extract_function_record(
+    program, func, *, locals_: list[dict] | None = None
+) -> dict:
     """Build stable function identity, body, signature, and storage metadata."""
     body = func.getBody()
     return_type = func.getReturnType()
@@ -1411,11 +1528,19 @@ def _extract_function_record(program, func) -> dict:
             "calling_convention": func.getCallingConventionName() or "unknown",
             "source": str(func.getSignatureSource()),
             "parameters": parameters,
-            "locals": [
-                _variable_record(variable) for variable in func.getLocalVariables()
-            ],
+            # The decompiler's own variables when the function was decompiled
+            # this run. Ghidra's function object is the fallback, and reports
+            # nothing at all for most functions.
+            "locals": (
+                list(locals_)
+                if locals_ is not None
+                else [
+                    _variable_record(variable) for variable in func.getLocalVariables()
+                ]
+            ),
         },
         "is_thunk": func.isThunk(),
+        "thunk": _thunk_target(func),
         "stack_frame": {
             "frame_size": stack_frame.getFrameSize(),
             "local_size": stack_frame.getLocalSize(),

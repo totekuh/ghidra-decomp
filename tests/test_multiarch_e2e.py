@@ -249,11 +249,15 @@ def test_architecture_function_artifacts_and_assembly(architecture_corpus):
     )
     for name in EXPECTED_FUNCTIONS:
         function = by_name[name]
-        assert function["decompilation"] == {
-            "status": "success",
-            "error": None,
-            "reused": False,
-        }
+        decompilation = function["decompilation"]
+        assert decompilation["status"] == "success"
+        assert decompilation["error"] is None
+        assert decompilation["reused"] is False
+        assert isinstance(decompilation["warnings"], list)
+        # These fixtures define no thunks, so the block must be absent for all
+        # of them rather than merely falsy.
+        assert function["is_thunk"] is False
+        assert function["thunk"] is None
         assert function["body_ranges"]
         artifacts = function["artifacts"]
         for path_key, hash_key in (
@@ -416,3 +420,72 @@ def test_architecture_exports_symbols_and_marker(architecture_corpus):
         for xref in marker_strings[0]["xrefs"]
         if xref["function"] is not None
     } == {"entry"}
+
+
+def test_locals_come_from_the_decompiler(architecture_corpus):
+    """`Function.getLocalVariables()` reports nothing for these fixtures.
+
+    Every function here uses local variables, so a corpus that reports none is
+    describing Ghidra's empty function object rather than the decompiler's own
+    model of the code.
+    """
+    _, output, _, _, _, _, _ = architecture_corpus
+    functions = load_json(output, "functions.json")
+
+    with_locals = [
+        function for function in functions if function["signature"]["locals"]
+    ]
+    assert with_locals, "no function reported a single local variable"
+
+    for function in with_locals:
+        parameters = {
+            parameter["name"] for parameter in function["signature"]["parameters"]
+        }
+        for local in function["signature"]["locals"]:
+            assert local["name"]
+            assert local["data_type"] not in (None, "")
+            assert local["size"] >= 0
+            assert local["storage"]["kind"] in {
+                "stack",
+                "register",
+                "memory",
+                "compound",
+                "unassigned",
+            }
+            assert local["name"] not in parameters, "a parameter leaked into locals"
+
+
+def test_recorded_locals_relate_to_the_pseudocode(architecture_corpus):
+    """The recorded locals must be the ones the emitted C actually uses.
+
+    Not every modelled local reaches the output: on MIPS the decompiler models a
+    stack slot that it then folds into an expression, so its name never appears.
+    The invariant is therefore that the corpus is describing this function's
+    code, not that every symbol survives printing.
+    """
+    _, output, _, _, _, _, _ = architecture_corpus
+    functions = load_json(output, "functions.json")
+
+    matched = 0
+    for function in functions:
+        locals_ = function["signature"]["locals"]
+        if not locals_:
+            continue
+        pseudocode = _contained_path(output, function["artifacts"]["pseudocode"])
+        text = pseudocode.read_text(encoding="utf-8")
+        matched += sum(1 for local in locals_ if local["name"] in text)
+
+    assert matched, "no recorded local appears anywhere in the pseudocode"
+
+
+def test_decompiler_warnings_are_traceable_to_the_pseudocode(architecture_corpus):
+    _, output, _, _, _, _, _ = architecture_corpus
+    functions = load_json(output, "functions.json")
+
+    for function in functions:
+        pseudocode = _contained_path(output, function["artifacts"]["pseudocode"])
+        collapsed = " ".join(pseudocode.read_text(encoding="utf-8").split())
+        for note in function["decompilation"]["warnings"]:
+            assert note["kind"] in {"warning", "unresolved_local", "note"}
+            assert note["text"]
+            assert note["text"] in collapsed

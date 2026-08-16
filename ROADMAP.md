@@ -24,6 +24,38 @@
 - [x] Keep per-function artifacts independently readable so analysis does not require joining large global JSON files.
 - [ ] Add a local query command that resolves a function by name or address and returns its complete context packet.
 
+## Corpus enrichment
+
+Additive sidecar and index fields that raise analysis quality without changing the
+pipeline. Ordered simplest first; each is a separate slice with its own tests.
+
+- [x] Record the thunked function's name and address in the sidecar. `is_thunk` is
+  already exported and `getThunkedFunction(True)` is already called when building the
+  C header comment, but the target reaches only that comment, so a thunk is a dead end
+  in the callgraph.
+- [x] Parse the decompiler's own `/* WARNING: ... */` lines out of the emitted C into a
+  structured `decompilation.warnings` list. They already appear in the pseudocode as
+  prose, where a consumer has to notice them; as a field they tell an agent exactly
+  where to distrust the output.
+- [x] Export decompiler-only local variables from `HighFunction.getLocalSymbolMap()`.
+  `signature.locals` currently comes from `Function.getLocalVariables()`, so a function
+  whose C says `Unresolved local var` still reports an empty locals list.
+- [ ] Deepen type records with category path, alignment, packing, and source archive.
+  Without the category path a consumer cannot tell a type Ghidra imported from an
+  archive apart from one it guessed from the binary.
+- [ ] Add a normalized function hash over the mnemonic sequence, ignoring operands and
+  addresses, so identical or statically linked functions can be recognized across
+  binaries without a BSim database.
+- [ ] Export listing comments (plate, pre, post, end-of-line), which currently carry
+  DWARF and analyzer findings that the corpus drops entirely. Likely opt-in, since they
+  add bulk on large binaries.
+- [ ] Export basic blocks and control-flow edges per function. Larger than the rest and
+  a new Ghidra API surface, so it belongs in its own slice.
+
+Every item above ships with unit tests against faked Ghidra objects and an end-to-end
+assertion against the checked-in multi-architecture binaries, so a field is proven to
+be populated from a real analysis rather than only from a stub.
+
 ## Agent integration
 
 - Keep bulk, read-only analysis filesystem-first so agents can use normal search and read tools without interactive Ghidra round-trips.

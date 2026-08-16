@@ -114,13 +114,20 @@ def test_function_artifacts_and_sidecars_match(system_decomp):
         ):
             assert variable["data_type"]
             assert variable["size"] >= 0
-            assert variable["source"]
             assert set(variable["storage"]) == {
                 "kind",
                 "register",
                 "stack_offset",
                 "description",
             }
+
+        # Parameters come from the function object and keep Ghidra's provenance.
+        # Locals come from the decompiler, which does not expose one, so the key
+        # is present and null rather than absent.
+        for parameter in function["signature"]["parameters"]:
+            assert parameter["source"]
+        for local in function["signature"]["locals"]:
+            assert "source" in local
 
 
 def test_assembly_contains_addresses_and_raw_bytes(system_decomp):
@@ -159,3 +166,78 @@ def test_combined_output_contains_exported_functions(system_decomp):
     assert all(
         f"// Address:  {function['address']}" in combined for function in functions
     )
+
+
+def test_thunks_record_their_targets(system_decomp):
+    """A thunk must not be a dead end in the callgraph."""
+    _, output = system_decomp
+    functions = json.loads((output / "functions.json").read_text())
+    thunks = [function for function in functions if function["is_thunk"]]
+    by_address = {function["address"]: function for function in functions}
+
+    assert thunks, "the system binary was expected to contain thunks"
+    for thunk in thunks:
+        target = thunk["thunk"]
+        assert target is not None
+        assert target["name"], f"{thunk['name']} names no thunk target"
+        assert target["address"]
+        # An external thunk points outside the program, so a target that does
+        # resolve locally must agree with the record it resolves to.
+        local = by_address.get(target["address"])
+        if local is not None:
+            assert local["name"] == target["name"]
+
+    for function in functions:
+        if not function["is_thunk"]:
+            assert function["thunk"] is None
+
+
+def test_decompiler_warnings_are_recorded(system_decomp):
+    """Where the decompiler says it gave up must be a field, not prose."""
+    _, output = system_decomp
+    functions = json.loads((output / "functions.json").read_text())
+
+    warned = [
+        function for function in functions if function["decompilation"]["warnings"]
+    ]
+    assert warned, "the system binary was expected to produce decompiler warnings"
+
+    texts = set()
+    for function in warned:
+        pseudocode = (output / function["artifacts"]["pseudocode"]).read_text()
+        for note in function["decompilation"]["warnings"]:
+            assert note["kind"] in {"warning", "unresolved_local", "note"}
+            assert note["text"]
+            # Every recorded note must be traceable to the artifact it came from.
+            assert note["text"] in " ".join(pseudocode.split())
+            texts.add(note["text"])
+
+    assert any("Subroutine does not return" in text for text in texts)
+
+
+def test_locals_come_from_the_decompiler(system_decomp):
+    _, output = system_decomp
+    functions = json.loads((output / "functions.json").read_text())
+
+    with_locals = [
+        function for function in functions if function["signature"]["locals"]
+    ]
+    assert with_locals, "no function reported any local variable"
+
+    for function in with_locals:
+        for local in function["signature"]["locals"]:
+            assert local["name"]
+            assert local["data_type"]
+            assert local["size"] >= 0
+            assert local["storage"]["kind"] in {
+                "stack",
+                "register",
+                "memory",
+                "compound",
+                "unassigned",
+            }
+        names = [local["name"] for local in function["signature"]["locals"]]
+        parameters = [
+            parameter["name"] for parameter in function["signature"]["parameters"]
+        ]
+        assert not set(names) & set(parameters), "a parameter leaked into locals"

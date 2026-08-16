@@ -13,7 +13,7 @@ Do not broadly scan `/home/witchtape`. Work inside this repository or another ex
 ## Repository state
 
 - Repository: `/home/witchtape/tools/ghidra-decomp`
-- Package: version 0.3.0, Python 3.10+, Click, PyGhidra 3.0+, Ghidra 12+, MIT licensed
+- Package: version 0.4.0, Python 3.10+, Click, PyGhidra 3.0+, Ghidra 12+, MIT licensed
 - CLI entry point: `ghidra-decomp = ghidra_decomp.cli:main`
 - Core implementation: `src/ghidra_decomp/decompiler.py`
 - Artifact helpers: `src/ghidra_decomp/artifacts.py`
@@ -77,7 +77,7 @@ Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`
 ### Corpus quality
 
 - Type records are shallow and omit category paths, packing, provenance, and usage references.
-- Function locals are limited to variables Ghidra materializes on the function object; richer decompiler-only temporaries are not exported.
+- Resolved: locals come from the decompiler's own symbol map, falling back to Ghidra's function object when a function was not decompiled this run.
 - Legacy `end_address` remains for compatibility, but consumers should use `body_ranges` for non-contiguous functions.
 
 ### Reliability
@@ -118,7 +118,7 @@ Each function sidecar contains at least:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "name": "parse_config",
   "address": "00100234",
   "body_ranges": [{"start": "00100234", "end": "0010034f"}],
@@ -138,10 +138,13 @@ Each function sidecar contains at least:
     "pseudocode": "functions/00100234_<digest>_parse_config.c",
     "assembly": "assembly/00100234_<digest>_parse_config.s"
   },
+  "is_thunk": false,
+  "thunk": null,
   "decompilation": {
     "status": "success",
     "error": null,
-    "reused": false
+    "reused": false,
+    "warnings": [{"kind": "warning", "text": "Subroutine does not return"}]
   }
 }
 ```
@@ -198,6 +201,19 @@ Keep this milestone serial. Establish deterministic output before adding concurr
 - [x] Compare serial and parallel corpora for identical function status, pseudocode, sidecars, and indexes.
 - [ ] Benchmark wall time, peak JVM memory, and failure behavior on large binaries. The checked-in fixtures are too small to measure.
 
+### Corpus enrichment slice 1 (complete)
+
+- [x] Record a thunk's target name and address. Measured on `/usr/bin/true`: 105 of 197
+  functions are thunks, and all 105 now name a target where none did before.
+- [x] Structure the decompiler's own `/* WARNING: ... */` output under
+  `decompilation.warnings`. Same binary: 135 warnings across 100 functions, previously
+  reachable only by reading the C.
+- [x] Take local variables from `HighFunction.getLocalSymbolMap()`. Functions reporting
+  any local went from 31 to 96 of 197, and from zero to all five on every checked-in
+  architecture fixture.
+
+Remaining enrichment items are listed in `ROADMAP.md`.
+
 ### Milestone 4: analysis inputs and secondary products (partial)
 
 - [x] Add function-name/address filters and targeted re-export (`--include`, `--exclude`, `--function`).
@@ -224,7 +240,7 @@ See `ROADMAP.md` for links and the complete survey table.
 - Implemented fixture end-to-end assertions for per-function C, JSON, assembly, hashes, body ranges, and call-site addresses.
 - Implemented a checked-in, reproducible LLVM 21 fixture matrix for x86-32, ARMv7, AArch64, MIPS32LE, PowerPC32BE, and RISC-V64. Each target uses an exact Ghidra language/compiler ID and validates functions, complete assembly byte coverage, calls/xrefs, exports, symbols, strings, sidecars, fingerprints, and index hashes.
 - Implemented a system-binary integration test that decompiles the host's `true` executable and validates manifest/index hashes, sidecars, addressed assembly bytes, xrefs, storage metadata, stack frames, and combined output.
-- Verified locally against Ghidra 12.1: 235 tests pass, 1 skipped (semgrep absent).
+- Verified locally against Ghidra 12.1: 278 tests pass, 1 skipped (semgrep absent).
 
 - Implemented cache unit tests in `tests/test_cache.py`: key stability, every invalidation input, XDG resolution, entry locking, and the resume predicate.
 - Implemented parallel unit tests in `tests/test_parallel.py`: one interface per worker, never shared across threads, timeout never multiplied, and isolated per-function failures.

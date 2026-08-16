@@ -13,18 +13,24 @@ from ghidra_decomp.decompiler import (
     _addresses_with_status,
     _artifact_stem,
     _body_ranges,
+    _decompiler_notes,
     _extract_entry_points,
     _extract_exports,
     _extract_function_references,
     _extract_imports,
     _extract_strings,
     _failure_comment,
+    _func_header_comment,
     _function_aliases,
+    _high_function_locals,
+    _high_local_record,
     _mark_entry,
     _parse_address,
     _sanitize_name,
     _summarize_statuses,
     _symbols_at,
+    _thunk_target,
+    _variable_record,
     decompile_binary,
 )
 
@@ -428,3 +434,263 @@ def test_status_summary_of_an_empty_corpus_is_all_zero():
         "failed": 0,
         "skipped": 0,
     }
+
+
+def _thunk(target=None, is_thunk=True):
+    return SimpleNamespace(
+        isThunk=lambda: is_thunk,
+        getThunkedFunction=lambda recursive: target,
+    )
+
+
+def test_a_thunk_records_its_target_name_and_address():
+    target = SimpleNamespace(
+        getName=lambda: "getenv", getEntryPoint=lambda: Address("EXTERNAL:00000001")
+    )
+
+    assert _thunk_target(_thunk(target)) == {
+        "name": "getenv",
+        "address": "EXTERNAL:00000001",
+    }
+
+
+def test_a_thunk_with_an_unresolvable_target_still_records_the_keys():
+    # The shape stays stable so a consumer never has to test for a missing block.
+    assert _thunk_target(_thunk(None)) == {"name": None, "address": None}
+
+
+def test_a_plain_function_records_no_thunk_target():
+    assert _thunk_target(_thunk(None, is_thunk=False)) is None
+
+
+def test_a_thunk_is_followed_to_its_final_target():
+    seen = []
+    target = SimpleNamespace(
+        getName=lambda: "final", getEntryPoint=lambda: Address("2000")
+    )
+    func = SimpleNamespace(
+        isThunk=lambda: True,
+        getThunkedFunction=lambda recursive: seen.append(recursive) or target,
+    )
+
+    _thunk_target(func)
+
+    assert seen == [True], "a thunk chain must be followed to the end"
+
+
+def test_decompiler_warnings_are_extracted_from_the_pseudocode():
+    c_code = (
+        "/* WARNING: Subroutine does not return */\n"
+        "void abort_wrapper(void)\n{\n  abort();\n}\n"
+    )
+
+    assert _decompiler_notes(c_code) == [
+        {"kind": "warning", "text": "Subroutine does not return"}
+    ]
+
+
+def test_every_warning_in_one_function_is_kept():
+    c_code = (
+        "/* WARNING: Subroutine does not return */\n"
+        "/* WARNING: Removing unreachable block (ram,0x00102874) */\n"
+        "void f(void) { }\n"
+    )
+
+    notes = _decompiler_notes(c_code)
+
+    assert [note["text"] for note in notes] == [
+        "Subroutine does not return",
+        "Removing unreachable block (ram,0x00102874)",
+    ]
+
+
+def test_a_multiline_warning_block_is_collapsed_into_one_note():
+    # The x86-32 fixture emits exactly this shape.
+    c_code = (
+        "u32 f(void)\n{\n    /* Unresolved local var: u32 total@[???]\n     */\n}\n"
+    )
+
+    assert _decompiler_notes(c_code) == [
+        {"kind": "unresolved_local", "text": "u32 total@[???]"}
+    ]
+
+
+def test_an_unresolved_local_is_classified_apart_from_a_warning():
+    c_code = (
+        "/* WARNING: Unknown calling convention */\n"
+        "u32 f(void)\n{\n  /* Unresolved local var: u32 mixed@[???] */\n}\n"
+    )
+
+    assert [note["kind"] for note in _decompiler_notes(c_code)] == [
+        "warning",
+        "unresolved_local",
+    ]
+
+
+def test_an_unrecognized_comment_is_kept_verbatim_as_a_note():
+    notes = _decompiler_notes("/* Something Ghidra has not said before */\nvoid f(){}")
+
+    assert notes == [{"kind": "note", "text": "Something Ghidra has not said before"}]
+
+
+def test_the_tools_own_header_is_never_parsed_as_a_warning():
+    # The header and failure comments are `//`, so they cannot be picked up.
+    header = _func_header_comment(
+        SimpleNamespace(
+            getEntryPoint=lambda: Address("1000"),
+            getName=lambda: "f",
+            getBody=lambda: SimpleNamespace(getNumAddresses=lambda: 4),
+            getCallingConventionName=lambda: "__cdecl",
+            getParameterCount=lambda: 0,
+            isThunk=lambda: False,
+        )
+    )
+
+    assert _decompiler_notes(header) == []
+    assert _decompiler_notes(_failure_comment("boom")) == []
+
+
+def test_pseudocode_without_comments_yields_no_warnings():
+    assert _decompiler_notes("int f(void) { return 0; }") == []
+    assert _decompiler_notes("") == []
+
+
+def test_an_empty_comment_block_is_not_recorded():
+    assert _decompiler_notes("/*  */\nvoid f(){}") == []
+
+
+class Storage:
+    """A real class, because `str(storage)` must reach a `__str__` on the type."""
+
+    def __init__(self, kind="register", register="EAX", offset=None):
+        self.kind = kind
+        self.register = register
+        self.offset = offset
+
+    def isUnassignedStorage(self):
+        return self.kind == "unassigned"
+
+    def isStackStorage(self):
+        return self.kind == "stack"
+
+    def isRegisterStorage(self):
+        return self.kind == "register"
+
+    def isMemoryStorage(self):
+        return self.kind == "memory"
+
+    def getStackOffset(self):
+        return self.offset
+
+    def getRegister(self):
+        return SimpleNamespace(getName=lambda: self.register)
+
+    def __str__(self):
+        return f"{self.register or 'Stack'}:4"
+
+
+def _storage(kind="register", register="EAX", offset=None):
+    return Storage(kind, register, offset)
+
+
+def _high_symbol(name, type_name, storage, is_parameter=False, size=4):
+    return SimpleNamespace(
+        getName=lambda: name,
+        getDataType=lambda: SimpleNamespace(getName=lambda: type_name),
+        getSize=lambda: size,
+        getStorage=lambda: storage,
+        isParameter=lambda: is_parameter,
+    )
+
+
+def _decompile_result(symbols):
+    return SimpleNamespace(
+        getHighFunction=lambda: SimpleNamespace(
+            getLocalSymbolMap=lambda: SimpleNamespace(getSymbols=lambda: symbols)
+        )
+    )
+
+
+def test_a_high_local_records_its_register_storage():
+    symbol = _high_symbol("uVar1", "u32", _storage("register", "EAX"))
+
+    assert _high_local_record(symbol) == {
+        "name": "uVar1",
+        "data_type": "u32",
+        "size": 4,
+        "storage": {
+            "kind": "register",
+            "register": "EAX",
+            "stack_offset": None,
+            "description": "EAX:4",
+        },
+        "source": None,
+    }
+
+
+def test_a_high_local_records_its_stack_offset():
+    symbol = _high_symbol("local_10", "int", _storage("stack", None, -16))
+
+    record = _high_local_record(symbol)
+
+    assert record["storage"]["kind"] == "stack"
+    assert record["storage"]["stack_offset"] == -16
+    assert record["storage"]["register"] is None
+
+
+def test_storage_records_are_identical_for_both_variable_kinds():
+    # A register local and a register parameter must serialize the same way, or
+    # a consumer has to special-case where the variable came from.
+    storage = _storage("register", "EBX")
+    high = _high_local_record(_high_symbol("uVar1", "u32", storage))
+    plain = _variable_record(
+        SimpleNamespace(
+            getName=lambda: "uVar1",
+            getDataType=lambda: SimpleNamespace(getName=lambda: "u32"),
+            getLength=lambda: 4,
+            getVariableStorage=lambda: storage,
+            getSource=lambda: "USER_DEFINED",
+        )
+    )
+
+    assert high["storage"] == plain["storage"]
+    assert set(high) == set(plain)
+
+
+def test_high_function_parameters_are_excluded_from_locals():
+    symbols = [
+        _high_symbol("values", "int *", _storage("stack", None, 4), is_parameter=True),
+        _high_symbol("uVar1", "u32", _storage("register", "EAX")),
+    ]
+
+    locals_ = _high_function_locals(_decompile_result(symbols))
+
+    assert [item["name"] for item in locals_] == ["uVar1"]
+
+
+def test_locals_are_empty_when_the_decompiler_produced_no_high_function():
+    assert _high_function_locals(None) == []
+    assert _high_function_locals(SimpleNamespace(getHighFunction=lambda: None)) == []
+    assert (
+        _high_function_locals(
+            SimpleNamespace(
+                getHighFunction=lambda: SimpleNamespace(getLocalSymbolMap=lambda: None)
+            )
+        )
+        == []
+    )
+
+
+def test_a_high_local_without_a_data_type_is_still_recorded():
+    symbol = SimpleNamespace(
+        getName=lambda: "unnamed",
+        getDataType=lambda: None,
+        getSize=lambda: 0,
+        getStorage=lambda: None,
+        isParameter=lambda: False,
+    )
+
+    record = _high_local_record(symbol)
+
+    assert record["data_type"] == "undefined"
+    assert record["storage"]["kind"] == "unassigned"

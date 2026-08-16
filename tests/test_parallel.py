@@ -30,13 +30,31 @@ def _function(address, name="func"):
     )
 
 
-def _result(*, completed=True, c_code="int f(void) { }", error=None):
+def _high_symbol(name, is_parameter=False):
+    return SimpleNamespace(
+        getName=lambda: name,
+        getDataType=lambda: SimpleNamespace(getName=lambda: "u32"),
+        getSize=lambda: 4,
+        getStorage=lambda: None,
+        isParameter=lambda: is_parameter,
+    )
+
+
+def _result(
+    *, completed=True, c_code="int f(void) { }", error=None, symbols=(), high=True
+):
+    high_function = None
+    if high:
+        high_function = SimpleNamespace(
+            getLocalSymbolMap=lambda: SimpleNamespace(getSymbols=lambda: list(symbols))
+        )
     return SimpleNamespace(
         decompileCompleted=lambda: completed,
         getDecompiledFunction=lambda: (
             SimpleNamespace(getC=lambda: c_code) if c_code is not None else None
         ),
         getErrorMessage=lambda: error,
+        getHighFunction=lambda: high_function,
     )
 
 
@@ -47,6 +65,7 @@ def test_a_decompiled_function_reports_success_and_its_c():
         STATUS_SUCCESS,
         None,
         "int f(void) { }",
+        [],
     )
 
 
@@ -55,7 +74,7 @@ def test_an_empty_result_is_a_fallback_not_a_failure():
         decompileFunction=lambda func, timeout, monitor: _result(c_code="")
     )
 
-    status, error, c_code = _decompile_one(decomp, None, _function("1000"), 30)
+    status, error, c_code, _ = _decompile_one(decomp, None, _function("1000"), 30)
 
     assert status == STATUS_FALLBACK
     assert error == "decompiler returned no C output"
@@ -69,7 +88,7 @@ def test_a_declined_function_is_a_fallback():
         )
     )
 
-    status, error, _ = _decompile_one(decomp, None, _function("1000"), 30)
+    status, error, *_ = _decompile_one(decomp, None, _function("1000"), 30)
 
     assert status == STATUS_FALLBACK
     assert "unsupported" in error
@@ -86,7 +105,7 @@ def test_a_timeout_is_recorded_as_failed_and_stays_retryable(message):
         )
     )
 
-    status, error, _ = _decompile_one(decomp, None, _function("1000"), 30)
+    status, error, *_ = _decompile_one(decomp, None, _function("1000"), 30)
 
     assert status == STATUS_FAILED
     assert error == message
@@ -98,7 +117,7 @@ def test_an_exception_is_recorded_as_failed():
 
     decomp = SimpleNamespace(decompileFunction=raiser)
 
-    status, error, _ = _decompile_one(decomp, None, _function("1000"), 30)
+    status, error, *_ = _decompile_one(decomp, None, _function("1000"), 30)
 
     assert status == STATUS_FAILED
     assert "JVM exploded" in error
@@ -167,7 +186,7 @@ def test_every_function_is_decompiled_exactly_once(fake_ghidra):
 
     assert set(results) == {func.getEntryPoint().toString() for func in functions}
     assert sum(len(interface.timeouts) for interface in fake_ghidra) == len(functions)
-    for address, (status, _, c_code) in results.items():
+    for address, (status, _, c_code, _locals) in results.items():
         assert status == STATUS_SUCCESS
         assert c_code == f"/* {address} */"
 
@@ -193,6 +212,7 @@ def test_results_do_not_depend_on_worker_count(fake_ghidra, workers):
             STATUS_SUCCESS,
             None,
             f"/* {func.getEntryPoint().toString()} */",
+            [],
         )
         for func in functions
     }
@@ -239,3 +259,67 @@ def test_default_worker_count_is_bounded():
     workers = default_workers()
 
     assert 1 <= workers <= 4
+
+
+def test_decompiled_locals_are_returned_from_the_worker():
+    symbols = [_high_symbol("uVar1"), _high_symbol("param_1", is_parameter=True)]
+    decomp = SimpleNamespace(
+        decompileFunction=lambda func, timeout, monitor: _result(symbols=symbols)
+    )
+
+    status, _, _, locals_ = _decompile_one(decomp, None, _function("1000"), 30)
+
+    assert status == STATUS_SUCCESS
+    # Locals must be plain data: the decompilation result belongs to the worker
+    # that produced it and must not outlive the call.
+    assert locals_ == [
+        {
+            "name": "uVar1",
+            "data_type": "u32",
+            "size": 4,
+            "storage": {
+                "kind": "unassigned",
+                "register": None,
+                "stack_offset": None,
+                "description": None,
+            },
+            "source": None,
+        }
+    ]
+
+
+def test_locals_are_empty_when_no_high_function_is_available():
+    decomp = SimpleNamespace(
+        decompileFunction=lambda func, timeout, monitor: _result(high=False)
+    )
+
+    status, _, _, locals_ = _decompile_one(decomp, None, _function("1000"), 30)
+
+    assert status == STATUS_SUCCESS
+    assert locals_ == []
+
+
+def test_a_failed_function_returns_no_locals():
+    def raiser(func, timeout, monitor):
+        raise RuntimeError("boom")
+
+    _, _, _, locals_ = _decompile_one(
+        SimpleNamespace(decompileFunction=raiser), None, _function("1000"), 30
+    )
+
+    assert locals_ == []
+
+
+def test_a_declined_function_still_reports_the_locals_it_produced():
+    # The decompiler can model variables and still decline to emit C; that
+    # information is worth keeping.
+    decomp = SimpleNamespace(
+        decompileFunction=lambda func, timeout, monitor: _result(
+            completed=False, error="Low-level Error", symbols=[_high_symbol("uVar1")]
+        )
+    )
+
+    status, _, _, locals_ = _decompile_one(decomp, None, _function("1000"), 30)
+
+    assert status == STATUS_FALLBACK
+    assert [item["name"] for item in locals_] == ["uVar1"]

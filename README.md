@@ -124,7 +124,22 @@ ranges, signature and variable storage, calls, references, related strings and
 globals, decompilation status, artifact paths, and hashes. Assembly files contain
 instruction addresses, raw bytes, mnemonics, and operands.
 
-Schema 3 artifact filenames include a stable digest and bounded ASCII components so
+Local variables come from the decompiler's own model, so the `uVar1` you read in the
+pseudocode carries its type and storage. A thunk records the name and address of what
+it forwards to, and the decompiler's own warnings — "Subroutine does not return",
+"Unknown calling convention" — are structured under `decompilation.warnings` instead of
+being left as prose inside the C:
+
+```json
+"is_thunk": true,
+"thunk": {"name": "getenv", "address": "EXTERNAL:00000001"},
+"decompilation": {
+  "status": "success",
+  "warnings": [{"kind": "warning", "text": "Subroutine does not return"}]
+}
+```
+
+Schema 4 artifact filenames include a stable digest and bounded ASCII components so
 segmented addresses, long symbols, and platform-reserved names remain safe. Consumers
 must follow the artifact paths in `functions.json` rather than constructing filenames.
 

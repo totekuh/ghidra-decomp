@@ -127,7 +127,20 @@ Each function sidecar contains at least:
     "return_type": "int",
     "calling_convention": "__cdecl",
     "parameters": [],
-    "locals": []
+    "locals": [
+      {
+        "name": "pcVar1",
+        "data_type": "char *",
+        "size": 8,
+        "storage": {
+          "kind": "register",
+          "register": "RAX",
+          "stack_offset": null,
+          "description": "RAX:8"
+        },
+        "source": null
+      }
+    ]
   },
   "calls": [],
   "called_by": [],
@@ -149,7 +162,7 @@ Each function sidecar contains at least:
 }
 ```
 
-Call edges must include the call-site address, target address/name when resolved, and reference type. Parameter and local records should include data type, storage kind, register or stack offset, size, and Ghidra source/provenance where available. Assembly lines should include instruction address, raw bytes, mnemonic, and operands.
+Call edges must include the call-site address, target address/name when resolved, and reference type. Parameter and local records should include data type, storage kind, register or stack offset, and size. Parameters come from the function object and carry Ghidra's provenance in `source`; locals come from the decompiler's symbol map, which has no equivalent, so their `source` is null rather than absent. Assembly lines should include instruction address, raw bytes, mnemonic, and operands.
 
 `manifest.json` includes:
 

@@ -108,7 +108,7 @@ firmware_decomp/
 ├── all_functions.c     # optional; enabled with --combined
 ├── program.gzf         # optional; enabled with --gzf
 ├── semgrep.sarif       # optional; enabled with --semgrep-config
-├── types.json          # recovered structs, enums, unions, typedefs
+├── types.json          # structs, enums, unions, typedefs + provenance and users
 ├── functions.json      # function index with address ranges + signatures
 ├── callgraph.json      # who calls who
 ├── strings.json        # strings + xrefs to functions
@@ -139,7 +139,43 @@ being left as prose inside the C:
 }
 ```
 
-Schema 4 artifact filenames include a stable digest and bounded ASCII components so
+Every type record says where it came from, how it is laid out, and who uses it, so a
+consumer can tell a layout the compiler described from one Ghidra reconstructed off the
+bytes before trusting an offset. `source_archive.archive_type` is `PROGRAM` for a type
+recovered from this binary and `FILE` or `PROJECT` for one imported from an archive; on
+`/usr/bin/true`, 11 of 28 types come from `generic_clib_64` and the other 17 from the
+binary itself. `used_by` reaches back to the data and functions that use the type,
+including through pointers and arrays, so `types.json` is not a dead end:
+
+```json
+{
+  "kind": "struct",
+  "name": "Elf32_Sym",
+  "path": "/ELF/Elf32_Sym",
+  "category_path": "/ELF",
+  "alignment": {"value": 1, "type": "DEFAULT", "minimum": null},
+  "packing": {"type": "DISABLED", "value": null},
+  "source_archive": {"name": "binary", "archive_type": "PROGRAM"},
+  "usage_count": 1,
+  "usage_truncated": false,
+  "used_by": [
+    {
+      "kind": "data",
+      "address": ".symtab::00000000",
+      "name": "Elf32_Sym_ARRAY_.symtab__00000000",
+      "ordinal": null,
+      "via": "Elf32_Sym[10]"
+    }
+  ]
+}
+```
+
+`packing` and `alignment.type` are null for a kind with no members to pack. `via` is the
+declaration at the use site, so a pointer or array use stays distinguishable from a
+direct one. `usage_count` is always the true total; `used_by` is capped at 200 entries
+and sets `usage_truncated` when it is cut, so a bounded list never reads as a small one.
+
+Schema 5 artifact filenames include a stable digest and bounded ASCII components so
 segmented addresses, long symbols, and platform-reserved names remain safe. Consumers
 must follow the artifact paths in `functions.json` rather than constructing filenames.
 

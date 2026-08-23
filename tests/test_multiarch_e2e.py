@@ -489,3 +489,91 @@ def test_decompiler_warnings_are_traceable_to_the_pseudocode(architecture_corpus
             assert note["kind"] in {"warning", "unresolved_local", "note"}
             assert note["text"]
             assert note["text"] in collapsed
+
+
+def test_type_records_carry_provenance_and_layout(architecture_corpus):
+    """A record that only states a layout cannot say how far to trust it."""
+    _, output, _, _, _, _, _ = architecture_corpus
+    types = load_json(output, "types.json")
+
+    assert types, "the fixture was expected to recover types"
+    for record in types:
+        assert record["path"].endswith(record["name"])
+        assert record["category_path"].startswith("/")
+        assert record["alignment"]["value"] >= 1
+        archive = record["source_archive"]
+        assert archive is not None
+        assert archive["name"]
+        assert archive["archive_type"] in {
+            "BUILT_IN",
+            "FILE",
+            "PROGRAM",
+            "PROJECT",
+            "TEMPORARY",
+        }
+        # Only a composite has members to pack, so the key is present and null
+        # everywhere else rather than absent.
+        if record["kind"] in {"struct", "union"}:
+            assert record["packing"]["type"] in {"DISABLED", "DEFAULT", "EXPLICIT"}
+            assert record["alignment"]["type"] in {"DEFAULT", "MACHINE", "EXPLICIT"}
+        else:
+            assert record["packing"] is None
+            assert record["alignment"]["type"] is None
+
+    assert [record["path"] for record in types] == sorted(
+        record["path"] for record in types
+    )
+
+
+def test_dwarf_types_are_distinguishable_from_guesses(architecture_corpus):
+    """These fixtures ship DWARF, so their types are evidence, not inference.
+
+    The category path is what carries that: without it a consumer cannot tell a
+    type the compiler described from one Ghidra reconstructed off the bytes.
+    """
+    _, output, _, _, _, _, _ = architecture_corpus
+    types = load_json(output, "types.json")
+
+    from_dwarf = [
+        record for record in types if record["category_path"].startswith("/DWARF")
+    ]
+    assert from_dwarf, "no type was attributed to the fixture's debug information"
+    for record in from_dwarf:
+        assert record["source_archive"]["archive_type"] == "PROGRAM"
+
+
+def test_type_usage_reaches_the_functions_that_use_it(architecture_corpus):
+    """A type with no way back to its users is a dead end in the corpus."""
+    _, output, _, _, _, _, _ = architecture_corpus
+    types = load_json(output, "types.json")
+    function_addresses = {
+        function["address"] for function in load_json(output, "functions.json")
+    }
+
+    used = [record for record in types if record["usage_count"]]
+    assert used, "no type reported a single user"
+
+    reached = set()
+    for record in types:
+        assert record["usage_count"] >= len(record["used_by"])
+        if not record["usage_truncated"]:
+            assert record["usage_count"] == len(record["used_by"])
+        for use in record["used_by"]:
+            assert use["kind"] in {"data", "function_parameter", "function_return"}
+            assert use["address"]
+            assert use["via"]
+            if use["kind"] == "data":
+                assert use["ordinal"] is None
+                continue
+            # Every function a type claims as a user must be one this corpus
+            # actually exported, not an address invented by the walk.
+            assert use["address"] in function_addresses
+            reached.add(use["address"])
+            if use["kind"] == "function_return":
+                assert use["ordinal"] is None
+            else:
+                assert use["ordinal"] >= 0
+
+    assert reached == function_addresses, (
+        "every fixture function is typed, so each must appear as a type user"
+    )

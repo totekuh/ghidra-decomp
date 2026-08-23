@@ -13,7 +13,7 @@ Do not broadly scan `/home/witchtape`. Work inside this repository or another ex
 ## Repository state
 
 - Repository: `/home/witchtape/tools/ghidra-decomp`
-- Package: version 0.4.0, Python 3.10+, Click, PyGhidra 3.0+, Ghidra 12+, MIT licensed
+- Package: version 0.5.0, Python 3.10+, Click, PyGhidra 3.0+, Ghidra 12+, MIT licensed
 - CLI entry point: `ghidra-decomp = ghidra_decomp.cli:main`
 - Core implementation: `src/ghidra_decomp/decompiler.py`
 - Artifact helpers: `src/ghidra_decomp/artifacts.py`
@@ -76,12 +76,13 @@ Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`
 
 ### Corpus quality
 
-- Type records are shallow and omit category paths, packing, provenance, and usage references.
+- Resolved: type records carry category path, alignment, packing, source archive, and the data and functions that use them.
 - Resolved: locals come from the decompiler's own symbol map, falling back to Ghidra's function object when a function was not decompiled this run.
 - Legacy `end_address` remains for compatibility, but consumers should use `body_ranges` for non-contiguous functions.
 
 ### Reliability
 
+- The default cache root is unusable on Ghidra 12.1.2. A retained project is opened at `$XDG_CACHE_HOME/ghidra-decomp/<fingerprint>`, which falls back to `~/.cache/...`, and Ghidra now rejects any project location containing a path element that starts with a dot: `java.lang.IllegalArgumentException: Path element starting with '.' is not permitted`. Every cached run therefore fails on a machine where `XDG_CACHE_HOME` is unset, which is the common case. `--no-cache` and a dot-free `--cache-dir` both work. This predates the type-record slice and is unrelated to it; the end-to-end suite is currently run with `XDG_CACHE_HOME` pointed at a dot-free directory. Fixing it means choosing a default project location that is not under a dot directory, which changes where the tool stores data.
 - Replacing an existing output uses two serialized directory renames, so readers can briefly observe the output path as absent.
 - Writeback into a persistent Ghidra project (renames, types, comments, patches) is still absent.
 - Symbol-server/PDB resolution and BSim export are still absent; both need infrastructure this repository has no fixture for.
@@ -104,7 +105,7 @@ Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`
 |-- xrefs.jsonl
 |-- strings.json
 |-- symbols.json
-|-- types.json
+|-- types.json               # provenance, layout, and users per type
 |-- imports.json
 |-- exports.json
 |-- sections.json
@@ -118,7 +119,7 @@ Each function sidecar contains at least:
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "name": "parse_config",
   "address": "00100234",
   "body_ranges": [{"start": "00100234", "end": "0010034f"}],
@@ -161,6 +162,8 @@ Each function sidecar contains at least:
   }
 }
 ```
+
+Each `types.json` record must carry `path`, `category_path`, `alignment`, `packing`, `source_archive`, `usage_count`, `usage_truncated`, and `used_by` in addition to its kind-specific block. `packing` and `alignment.type` are null for a kind with no members to pack, rather than absent. `source_archive.archive_type` is the provenance answer: `PROGRAM` means the type was recovered from this binary, `FILE` or `PROJECT` means it was imported. A `used_by` entry records the use site's kind, address, name, parameter ordinal, and the declaration that reached the type, so a pointer or array use stays distinguishable from a direct one. `usage_count` is the true total even when `used_by` is capped at `TYPE_USAGE_LIMIT`. Records are sorted by `path` and uses within a record are sorted, because the `types.json` hash in the manifest has to be reproducible.
 
 Call edges must include the call-site address, target address/name when resolved, and reference type. Parameter and local records should include data type, storage kind, register or stack offset, and size. Parameters come from the function object and carry Ghidra's provenance in `source`; locals come from the decompiler's symbol map, which has no equivalent, so their `source` is null rather than absent. Assembly lines should include instruction address, raw bytes, mnemonic, and operands.
 
@@ -225,6 +228,24 @@ Keep this milestone serial. Establish deterministic output before adding concurr
   any local went from 31 to 96 of 197, and from zero to all five on every checked-in
   architecture fixture.
 
+### Corpus enrichment slice 2 (complete)
+
+- [x] Record each type's category path and source archive. Measured on `/usr/bin/true`:
+  all 28 types now name both, where none did before, and the corpus can state that 11
+  come from the `generic_clib_64` archive and 17 were recovered from the binary — a
+  distinction it previously could not express at all. On the x86-32 fixture, 7 of 13
+  types are attributed to `/DWARF`.
+- [x] Record effective alignment for every type, plus packing type, packing value,
+  alignment type, and explicit minimum alignment for composites.
+- [x] Record the data and functions that use each type, reaching through pointer,
+  array, and typedef declarations. Same binary: 20 of 28 types now name at least one
+  user, the busiest naming 102. The `u32` typedef in the fixtures reports 11 users,
+  covering all five fixture functions.
+- [x] Replace the hardcoded built-in name list with a `BuiltInDataType` check, so a
+  program structure named `string` or `int` is no longer silently dropped. The recovered
+  set is byte-identical on `/usr/bin/true` and on the x86-32 fixture; the change removes
+  a way to lose a real type rather than changing today's output.
+
 Remaining enrichment items are listed in `ROADMAP.md`.
 
 ### Milestone 4: analysis inputs and secondary products (partial)
@@ -253,7 +274,9 @@ See `ROADMAP.md` for links and the complete survey table.
 - Implemented fixture end-to-end assertions for per-function C, JSON, assembly, hashes, body ranges, and call-site addresses.
 - Implemented a checked-in, reproducible LLVM 21 fixture matrix for x86-32, ARMv7, AArch64, MIPS32LE, PowerPC32BE, and RISC-V64. Each target uses an exact Ghidra language/compiler ID and validates functions, complete assembly byte coverage, calls/xrefs, exports, symbols, strings, sidecars, fingerprints, and index hashes.
 - Implemented a system-binary integration test that decompiles the host's `true` executable and validates manifest/index hashes, sidecars, addressed assembly bytes, xrefs, storage metadata, stack frames, and combined output.
-- Verified locally against Ghidra 12.1: 278 tests pass, 1 skipped (semgrep absent).
+- Implemented type-record unit tests in `tests/test_decompiler_helpers.py`: built-ins skipped by type rather than by name, the full key set on every kind, explicit and default packing, source-archive provenance, pointer and array unwrapping, the usage cap, and deterministic ordering.
+- Implemented type-record end-to-end assertions in `tests/test_multiarch_e2e.py`: provenance and layout on every record, DWARF-derived types attributed to the program, and every function-kind user resolving to a function in `functions.json`.
+- Verified locally against Ghidra 12.1.2: 305 tests pass, 1 skipped (semgrep absent). The end-to-end suite currently needs `XDG_CACHE_HOME` set to a dot-free directory; see the cache-root defect under Reliability.
 
 - Implemented cache unit tests in `tests/test_cache.py`: key stability, every invalidation input, XDG resolution, entry locking, and the resume predicate.
 - Implemented parallel unit tests in `tests/test_parallel.py`: one interface per worker, never shared across threads, timeout never multiplied, and isolated per-function failures.
@@ -281,9 +304,8 @@ The end-to-end suite requires Ghidra 12+ and can take several minutes. CI instal
 
 Milestones 2 and 3 are complete and Milestone 4 is partial. What remains, in order of value:
 
-1. Benchmark parallel decompilation on a large binary: wall time, peak JVM memory, and failure behavior. The checked-in fixtures have five functions each and cannot show the difference. Until this is measured, `--workers` defaults conservatively on purpose.
-2. Deepen type records with category paths, packing, alignment, provenance, and usage references.
-3. Export decompiler-only local variables, not just those Ghidra materializes on the function object.
-4. Close the publication gap where readers can briefly observe the output path as absent between the two renames.
-5. Add symbol-server/PDB resolution and BSim export once fixtures and infrastructure exist for them.
-6. Evaluate `ghidra-cli` or MCP for live queries and writeback into a persistent project.
+1. Fix the default cache root, which Ghidra 12.1.2 rejects for containing a dot-prefixed path element. Caching is on by default, so the tool fails out of the box wherever `XDG_CACHE_HOME` is unset. The fix is a choice about where the tool stores retained projects, not a one-line change.
+2. Benchmark parallel decompilation on a large binary: wall time, peak JVM memory, and failure behavior. The checked-in fixtures have five functions each and cannot show the difference. Until this is measured, `--workers` defaults conservatively on purpose.
+3. Close the publication gap where readers can briefly observe the output path as absent between the two renames.
+4. Add symbol-server/PDB resolution and BSim export once fixtures and infrastructure exist for them.
+5. Evaluate `ghidra-cli` or MCP for live queries and writeback into a persistent project.

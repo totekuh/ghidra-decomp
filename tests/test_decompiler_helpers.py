@@ -10,6 +10,7 @@ from ghidra_decomp.decompiler import (
     STATUS_FAILED,
     STATUS_FALLBACK,
     STATUS_SUCCESS,
+    TYPE_USAGE_LIMIT,
     _addresses_with_status,
     _artifact_stem,
     _body_ranges,
@@ -19,6 +20,7 @@ from ghidra_decomp.decompiler import (
     _extract_function_references,
     _extract_imports,
     _extract_strings,
+    _extract_types,
     _failure_comment,
     _func_header_comment,
     _function_aliases,
@@ -694,3 +696,361 @@ def test_a_high_local_without_a_data_type_is_still_recorded():
 
     assert record["data_type"] == "undefined"
     assert record["storage"]["kind"] == "unassigned"
+
+
+def _install_type_module(monkeypatch):
+    """Install a fake `ghidra.program.model.data` carrying the dispatch classes.
+
+    `_extract_types` selects on type rather than on a name, so the fakes must be
+    real classes in a real inheritance tree: `Structure` and `Union` have to
+    answer to `Composite`, and a built-in structure has to answer to both.
+    """
+    module = ModuleType("ghidra.program.model.data")
+
+    class BuiltInDataType:
+        pass
+
+    class Composite:
+        pass
+
+    class Structure(Composite):
+        pass
+
+    class Union(Composite):
+        pass
+
+    class Enum:
+        pass
+
+    class TypeDef:
+        pass
+
+    class FunctionDefinition:
+        pass
+
+    class Pointer:
+        pass
+
+    class Array:
+        pass
+
+    class BuiltInStructure(Structure, BuiltInDataType):
+        pass
+
+    for cls in (
+        BuiltInDataType,
+        Composite,
+        Structure,
+        Union,
+        Enum,
+        TypeDef,
+        FunctionDefinition,
+        Pointer,
+        Array,
+    ):
+        setattr(module, cls.__name__, cls)
+    module.BuiltInStructure = BuiltInStructure
+    monkeypatch.setitem(sys.modules, "ghidra.program.model.data", module)
+    return module
+
+
+def _archive(name="generic_clib", archive_type="FILE"):
+    return SimpleNamespace(getName=lambda: name, getArchiveType=lambda: archive_type)
+
+
+def _data_type(cls, name, *, category="/", alignment=4, archive=None, **methods):
+    """Build one fake data type carrying the keys every record reads."""
+    dt = cls()
+    dt.getName = lambda: name
+    dt.getPathName = lambda: f"{'' if category == '/' else category}/{name}"
+    dt.getCategoryPath = lambda: SimpleNamespace(getPath=lambda: category)
+    dt.getAlignment = lambda: alignment
+    dt.getSourceArchive = lambda: archive
+    for key, value in methods.items():
+        setattr(dt, key, value)
+    return dt
+
+
+def _composite(cls, name, *, packing="DISABLED", explicit_packing=None, **kwargs):
+    """Build a fake struct or union, which alone can answer layout questions."""
+    minimum = kwargs.pop("minimum_alignment", None)
+    alignment_type = kwargs.pop("alignment_type", "DEFAULT")
+    dt = _data_type(cls, name, **kwargs)
+    dt.getPackingType = lambda: packing
+    dt.hasExplicitPackingValue = lambda: explicit_packing is not None
+    dt.getExplicitPackingValue = lambda: explicit_packing
+    dt.getAlignmentType = lambda: alignment_type
+    dt.hasExplicitMinimumAlignment = lambda: minimum is not None
+    dt.getExplicitMinimumAlignment = lambda: minimum
+    return dt
+
+
+def _field(name, type_name, offset=0, size=4):
+    return SimpleNamespace(
+        getFieldName=lambda: name,
+        getDataType=lambda: SimpleNamespace(getName=lambda: type_name),
+        getOffset=lambda: offset,
+        getLength=lambda: size,
+        getOrdinal=lambda: offset,
+    )
+
+
+def _struct(module, name, fields=(), **kwargs):
+    return _composite(
+        module.Structure,
+        name,
+        getLength=lambda: 8,
+        getComponents=lambda: list(fields),
+        **kwargs,
+    )
+
+
+def _typedef(module, name, base="uint", **kwargs):
+    return _data_type(
+        module.TypeDef,
+        name,
+        getBaseDataType=lambda: SimpleNamespace(getName=lambda: base),
+        getDataType=lambda: SimpleNamespace(getName=lambda: base),
+        **kwargs,
+    )
+
+
+def _pointer(module, target, name=None):
+    """A pointer whose declaration reaches `target` when unwrapped."""
+    label = name or f"{target.getName()} *"
+    pointer = module.Pointer()
+    pointer.getName = lambda: label
+    pointer.getPathName = lambda: f"/{label}"
+    pointer.getDataType = lambda: target
+    return pointer
+
+
+def _defined_data(data_type, address, label):
+    return SimpleNamespace(
+        getDataType=lambda: data_type,
+        getAddress=lambda: Address(address),
+        getLabel=lambda: label,
+    )
+
+
+def _typed_function(address, name, return_type=None, parameters=()):
+    return SimpleNamespace(
+        getEntryPoint=lambda: Address(address),
+        getName=lambda: name,
+        getReturnType=lambda: return_type,
+        getParameters=lambda: list(parameters),
+    )
+
+
+def _parameter(data_type, ordinal):
+    return SimpleNamespace(getDataType=lambda: data_type, getOrdinal=lambda: ordinal)
+
+
+def _type_program(types, *, data=(), functions=()):
+    return SimpleNamespace(
+        getDataTypeManager=lambda: SimpleNamespace(getAllDataTypes=lambda: list(types)),
+        getListing=lambda: SimpleNamespace(getDefinedData=lambda forward: list(data)),
+        getFunctionManager=lambda: SimpleNamespace(
+            getFunctions=lambda forward: list(functions)
+        ),
+    )
+
+
+def test_builtins_are_skipped_by_type_rather_than_by_name(monkeypatch):
+    # The old name list dropped anything called `string`, including a structure
+    # this binary actually defines.
+    module = _install_type_module(monkeypatch)
+    program = _type_program(
+        [
+            _struct(module, "string"),
+            _composite(
+                module.BuiltInStructure,
+                "undefined8",
+                getLength=lambda: 8,
+                getComponents=list,
+            ),
+        ]
+    )
+
+    records = _extract_types(program)
+
+    assert [record["name"] for record in records] == ["string"]
+
+
+def test_every_record_carries_provenance_and_layout_keys(monkeypatch):
+    module = _install_type_module(monkeypatch)
+    program = _type_program(
+        [
+            _struct(module, "Point", category="/DWARF/sample.c"),
+            _typedef(module, "u32", category="/DWARF/sample.c"),
+        ]
+    )
+
+    records = {record["name"]: record for record in _extract_types(program)}
+
+    expected = {
+        "name",
+        "path",
+        "kind",
+        "category_path",
+        "alignment",
+        "packing",
+        "source_archive",
+        "usage_count",
+        "usage_truncated",
+        "used_by",
+    }
+    assert expected <= set(records["Point"])
+    assert expected <= set(records["u32"])
+    assert records["Point"]["category_path"] == "/DWARF/sample.c"
+    assert records["Point"]["path"] == "/DWARF/sample.c/Point"
+    # A typedef has no members to pack and no packing rule to report, so the
+    # keys are present and null rather than absent.
+    assert records["u32"]["packing"] is None
+    assert records["u32"]["alignment"] == {"value": 4, "type": None, "minimum": None}
+
+
+def test_explicit_packing_and_minimum_alignment_are_recorded(monkeypatch):
+    module = _install_type_module(monkeypatch)
+    packed = _struct(
+        module,
+        "Packed",
+        packing="EXPLICIT",
+        explicit_packing=1,
+        alignment_type="EXPLICIT",
+        minimum_alignment=8,
+        alignment=8,
+    )
+
+    (record,) = _extract_types(_type_program([packed]))
+
+    assert record["packing"] == {"type": "EXPLICIT", "value": 1}
+    assert record["alignment"] == {"value": 8, "type": "EXPLICIT", "minimum": 8}
+
+
+def test_default_packing_reports_no_explicit_value(monkeypatch):
+    module = _install_type_module(monkeypatch)
+
+    (record,) = _extract_types(_type_program([_struct(module, "Plain")]))
+
+    assert record["packing"] == {"type": "DISABLED", "value": None}
+    assert record["alignment"]["minimum"] is None
+
+
+def test_source_archive_records_the_provenance_ghidra_reports(monkeypatch):
+    module = _install_type_module(monkeypatch)
+    program = _type_program(
+        [
+            _struct(module, "Imported", archive=_archive("generic_clib_64", "FILE")),
+            _struct(module, "Guessed"),
+        ]
+    )
+
+    records = {record["name"]: record for record in _extract_types(program)}
+
+    assert records["Imported"]["source_archive"] == {
+        "name": "generic_clib_64",
+        "archive_type": "FILE",
+    }
+    assert records["Guessed"]["source_archive"] is None
+
+
+def test_a_pointer_typed_global_is_attributed_to_the_pointed_to_type(monkeypatch):
+    module = _install_type_module(monkeypatch)
+    point = _struct(module, "Point")
+    program = _type_program(
+        [point], data=[_defined_data(_pointer(module, point), "00104010", "g_origin")]
+    )
+
+    (record,) = _extract_types(program)
+
+    assert record["usage_count"] == 1
+    # `via` keeps the declaration, so a pointer use stays distinguishable from
+    # a direct one.
+    assert record["used_by"] == [
+        {
+            "kind": "data",
+            "address": "00104010",
+            "name": "g_origin",
+            "ordinal": None,
+            "via": "Point *",
+        }
+    ]
+
+
+def test_function_returns_and_parameters_are_recorded_as_uses(monkeypatch):
+    module = _install_type_module(monkeypatch)
+    point = _struct(module, "Point")
+    program = _type_program(
+        [point],
+        functions=[
+            _typed_function("00101150", "make_point", return_type=point),
+            _typed_function(
+                "00101190",
+                "translate",
+                parameters=[_parameter(_pointer(module, point), 0)],
+            ),
+        ],
+    )
+
+    (record,) = _extract_types(program)
+
+    assert record["used_by"] == [
+        {
+            "kind": "function_parameter",
+            "address": "00101190",
+            "name": "translate",
+            "ordinal": 0,
+            "via": "Point *",
+        },
+        {
+            "kind": "function_return",
+            "address": "00101150",
+            "name": "make_point",
+            "ordinal": None,
+            "via": "Point",
+        },
+    ]
+
+
+def test_usage_is_bounded_but_the_true_total_is_still_reported(monkeypatch):
+    module = _install_type_module(monkeypatch)
+    point = _struct(module, "Point")
+    uses = TYPE_USAGE_LIMIT + 5
+    program = _type_program(
+        [point],
+        data=[
+            _defined_data(point, f"{0x100000 + index:08x}", f"g_{index}")
+            for index in range(uses)
+        ],
+    )
+
+    (record,) = _extract_types(program)
+
+    # A truncated list must never read as a small one.
+    assert record["usage_count"] == uses
+    assert record["usage_truncated"] is True
+    assert len(record["used_by"]) == TYPE_USAGE_LIMIT
+
+
+def test_records_and_their_uses_come_back_sorted(monkeypatch):
+    module = _install_type_module(monkeypatch)
+    point = _struct(module, "Point")
+    program = _type_program(
+        [_struct(module, "Zebra"), point, _typedef(module, "Alpha")],
+        data=[
+            _defined_data(point, "00104020", "later"),
+            _defined_data(point, "00104010", "earlier"),
+        ],
+    )
+
+    records = _extract_types(program)
+
+    # `getAllDataTypes()` has no documented ordering, and the types.json hash in
+    # the manifest has to be reproducible across runs.
+    assert [record["path"] for record in records] == ["/Alpha", "/Point", "/Zebra"]
+    point_record = next(record for record in records if record["name"] == "Point")
+    assert [use["address"] for use in point_record["used_by"]] == [
+        "00104010",
+        "00104020",
+    ]

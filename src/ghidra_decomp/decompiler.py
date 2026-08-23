@@ -58,6 +58,11 @@ STATUS_FALLBACK = "fallback"
 STATUS_FAILED = "failed"
 STATUSES = (STATUS_SUCCESS, STATUS_FALLBACK, STATUS_FAILED)
 
+# A widely used type — `char`, an error struct, a callback signature — can be
+# referenced thousands of times, and `types.json` is read whole. The full total
+# is always reported; only the enumerated list is bounded.
+TYPE_USAGE_LIMIT = 200
+
 
 def _sanitize_name(name: str, max_length: int = 80) -> str:
     """Turn a function name into a safe filename component."""
@@ -1725,11 +1730,177 @@ def _extract_symbols(program) -> list[dict]:
     return symbols
 
 
+def _category_path(dt) -> str:
+    """Report where the type manager filed this type.
+
+    A type Ghidra guessed off the binary sits in the program's own categories,
+    while one recovered from DWARF or imported from an archive carries that
+    origin in its path. Without it a consumer cannot tell evidence from a guess.
+    The root category serializes as "/", so this is never empty.
+    """
+    category = dt.getCategoryPath()
+    if category is None:
+        return "/"
+    return category.getPath()
+
+
+def _alignment_record(dt, composite) -> dict:
+    """Report how the type is aligned.
+
+    `value` is the effective alignment and applies to every kind. How Ghidra
+    arrived at it is a question only a composite can answer, so the remaining
+    keys are null elsewhere rather than absent.
+    """
+    record: dict = {"value": dt.getAlignment(), "type": None, "minimum": None}
+    if composite is None:
+        return record
+    record["type"] = str(composite.getAlignmentType())
+    if composite.hasExplicitMinimumAlignment():
+        record["minimum"] = composite.getExplicitMinimumAlignment()
+    return record
+
+
+def _packing_record(composite) -> dict | None:
+    """Report how a composite's members are packed.
+
+    Returns None for a type with no members to pack. `value` is filled only for
+    explicit packing, because that is the only case where a number was chosen
+    rather than derived.
+    """
+    if composite is None:
+        return None
+    record: dict = {"type": str(composite.getPackingType()), "value": None}
+    if composite.hasExplicitPackingValue():
+        record["value"] = composite.getExplicitPackingValue()
+    return record
+
+
+def _source_archive_record(dt) -> dict | None:
+    """Report where the type came from.
+
+    `archive_type` is the provenance answer: PROGRAM means Ghidra recovered the
+    type from this binary, while FILE or PROJECT means it was imported and its
+    layout is exactly as trustworthy as the archive it came from.
+    """
+    archive = dt.getSourceArchive()
+    if archive is None:
+        return None
+    return {"name": archive.getName(), "archive_type": str(archive.getArchiveType())}
+
+
+def _referenced_data_types(declared) -> list[tuple]:
+    """Every type a declaration reaches, paired with the declaration itself.
+
+    A global declared `Point *` is a use of `Point`; without unwrapping the
+    pointer, the struct would report no users at all. `via` keeps the outer
+    declaration, so a pointer use stays distinguishable from a direct one.
+
+    Only wrappers are unwrapped, so the walk terminates at the first real type
+    and a self-referencing struct cannot loop.
+    """
+    from ghidra.program.model.data import Array, Pointer, TypeDef
+
+    if declared is None:
+        return []
+
+    via = declared.getName()
+    reached: list[tuple] = []
+    seen: set[str] = set()
+    current = declared
+    while current is not None:
+        path = current.getPathName()
+        if path in seen:
+            break
+        seen.add(path)
+        reached.append((current, via))
+        if not isinstance(current, (Pointer, Array, TypeDef)):
+            break
+        current = current.getDataType()
+    return reached
+
+
+def _type_usage_index(program) -> dict[str, list[dict]]:
+    """Map every type to the data and functions that use it.
+
+    Without this a type record is a dead end: a consumer can read a struct's
+    layout but has no way to reach the code that touches it. The index covers
+    the whole program rather than the exported subset, the way `symbols.json`
+    and `strings.json` already do, so a filtered export still describes the
+    binary rather than the filter.
+    """
+    usage: dict[str, list[dict]] = {}
+
+    def record(declared, entry: dict) -> None:
+        for dt, via in _referenced_data_types(declared):
+            usage.setdefault(dt.getPathName(), []).append({**entry, "via": via})
+
+    for data in program.getListing().getDefinedData(True):
+        record(
+            data.getDataType(),
+            {
+                "kind": "data",
+                "address": data.getAddress().toString(),
+                "name": data.getLabel(),
+                "ordinal": None,
+            },
+        )
+
+    for func in program.getFunctionManager().getFunctions(True):
+        entry = {
+            "kind": "function_return",
+            "address": func.getEntryPoint().toString(),
+            "name": func.getName(),
+            "ordinal": None,
+        }
+        record(func.getReturnType(), entry)
+        for parameter in func.getParameters():
+            record(
+                parameter.getDataType(),
+                {
+                    **entry,
+                    "kind": "function_parameter",
+                    "ordinal": parameter.getOrdinal(),
+                },
+            )
+
+    return usage
+
+
+def _type_usage(entries: list[dict]) -> dict:
+    """Bound the recorded user list without hiding how large it really is.
+
+    `types.json` is read whole, and a type like an error struct or a callback
+    signature can be used thousands of times. `usage_count` always reports the
+    true total, so a truncated list never reads as a small one.
+    """
+    ordered = sorted(
+        entries,
+        key=lambda entry: (
+            entry["kind"],
+            entry["address"],
+            -1 if entry["ordinal"] is None else entry["ordinal"],
+            entry["via"] or "",
+        ),
+    )
+    return {
+        "usage_count": len(ordered),
+        "usage_truncated": len(ordered) > TYPE_USAGE_LIMIT,
+        "used_by": ordered[:TYPE_USAGE_LIMIT],
+    }
+
+
 def _extract_types(program) -> list[dict]:
-    """Extract all recovered types (structs, enums, typedefs, unions, function pointers)."""
+    """Extract all recovered types (structs, enums, typedefs, unions, function pointers).
+
+    Every record states where the type came from, how it is laid out, and who
+    uses it, so a consumer can decide whether a field layout is evidence or a
+    guess before relying on it.
+    """
     dtm = program.getDataTypeManager()
 
     from ghidra.program.model.data import (
+        BuiltInDataType,
+        Composite,
         Enum,
         FunctionDefinition,
         Structure,
@@ -1737,116 +1908,91 @@ def _extract_types(program) -> list[dict]:
         Union,
     )
 
-    BUILTIN = {
-        "byte",
-        "word",
-        "dword",
-        "qword",
-        "void",
-        "bool",
-        "char",
-        "short",
-        "int",
-        "long",
-        "float",
-        "double",
-        "uchar",
-        "ushort",
-        "uint",
-        "ulong",
-        "undefined",
-        "undefined1",
-        "undefined2",
-        "undefined4",
-        "undefined8",
-        "pointer",
-        "string",
-    }
-
+    usage = _type_usage_index(program)
     result = []
 
     for dt in dtm.getAllDataTypes():
-        if dt.getName() in BUILTIN:
+        # Ghidra's own primitives are not findings about this binary. Matching
+        # the type instead of a list of names means a program structure named
+        # `string` or `int` is no longer silently dropped along with them.
+        if isinstance(dt, BuiltInDataType):
             continue
 
         if isinstance(dt, Structure):
-            fields = []
-            for comp in dt.getComponents():
-                fields.append(
+            specific = {
+                "kind": "struct",
+                "size": dt.getLength(),
+                "fields": [
                     {
                         "name": comp.getFieldName() or f"field_0x{comp.getOffset():x}",
                         "type": comp.getDataType().getName(),
                         "offset": comp.getOffset(),
                         "size": comp.getLength(),
                     }
-                )
-            result.append(
-                {
-                    "kind": "struct",
-                    "name": dt.getName(),
-                    "size": dt.getLength(),
-                    "fields": fields,
-                }
-            )
+                    for comp in dt.getComponents()
+                ],
+            }
 
         elif isinstance(dt, Union):
-            fields = []
-            for comp in dt.getComponents():
-                fields.append(
+            specific = {
+                "kind": "union",
+                "size": dt.getLength(),
+                "fields": [
                     {
                         "name": comp.getFieldName() or f"field_{comp.getOrdinal()}",
                         "type": comp.getDataType().getName(),
                         "size": comp.getLength(),
                     }
-                )
-            result.append(
-                {
-                    "kind": "union",
-                    "name": dt.getName(),
-                    "size": dt.getLength(),
-                    "fields": fields,
-                }
-            )
+                    for comp in dt.getComponents()
+                ],
+            }
 
         elif isinstance(dt, Enum):
-            members = {}
-            for name in dt.getNames():
-                members[name] = dt.getValue(name)
-            result.append(
-                {
-                    "kind": "enum",
-                    "name": dt.getName(),
-                    "size": dt.getLength(),
-                    "members": members,
-                }
-            )
+            specific = {
+                "kind": "enum",
+                "size": dt.getLength(),
+                "members": {name: dt.getValue(name) for name in dt.getNames()},
+            }
 
         elif isinstance(dt, TypeDef):
             base = dt.getBaseDataType()
-            result.append(
-                {
-                    "kind": "typedef",
-                    "name": dt.getName(),
-                    "base_type": base.getName() if base else "unknown",
-                }
-            )
+            specific = {
+                "kind": "typedef",
+                "base_type": base.getName() if base else "unknown",
+            }
 
         elif isinstance(dt, FunctionDefinition):
-            params = []
-            for arg in dt.getArguments():
-                params.append(
-                    {"type": arg.getDataType().getName(), "name": arg.getName()}
-                )
             ret = dt.getReturnType()
-            result.append(
-                {
-                    "kind": "function_pointer",
-                    "name": dt.getName(),
-                    "return_type": ret.getName() if ret else "void",
-                    "params": params,
-                }
-            )
+            specific = {
+                "kind": "function_pointer",
+                "return_type": ret.getName() if ret else "void",
+                "params": [
+                    {"type": arg.getDataType().getName(), "name": arg.getName()}
+                    for arg in dt.getArguments()
+                ],
+            }
 
+        else:
+            continue
+
+        path = dt.getPathName()
+        composite = dt if isinstance(dt, Composite) else None
+        result.append(
+            {
+                **specific,
+                "name": dt.getName(),
+                "path": path,
+                "category_path": _category_path(dt),
+                "alignment": _alignment_record(dt, composite),
+                "packing": _packing_record(composite),
+                "source_archive": _source_archive_record(dt),
+                **_type_usage(usage.get(path, [])),
+            }
+        )
+
+    # `getAllDataTypes()` has no documented ordering, so sort rather than trust
+    # it: the types.json hash recorded in the manifest has to be reproducible.
+    result.sort(key=lambda record: record["path"])
     return result
 
 

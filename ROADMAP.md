@@ -40,9 +40,12 @@ pipeline. Ordered simplest first; each is a separate slice with its own tests.
 - [x] Export decompiler-only local variables from `HighFunction.getLocalSymbolMap()`.
   `signature.locals` currently comes from `Function.getLocalVariables()`, so a function
   whose C says `Unresolved local var` still reports an empty locals list.
-- [ ] Deepen type records with category path, alignment, packing, and source archive.
-  Without the category path a consumer cannot tell a type Ghidra imported from an
-  archive apart from one it guessed from the binary.
+- [x] Deepen type records with category path, alignment, packing, and source archive.
+  Shipped with the data and functions that use each type, reached through pointer,
+  array, and typedef declarations, and with the built-in name list replaced by a
+  `BuiltInDataType` check. On `/usr/bin/true` all 28 types now name a category path and
+  a source archive, 11 of them imported from `generic_clib_64` and 17 recovered from the
+  binary, and 20 of 28 name at least one user.
 - [ ] Add a normalized function hash over the mnemonic sequence, ignoring operands and
   addresses, so identical or statically linked functions can be recognized across
   binaries without a BSim database.

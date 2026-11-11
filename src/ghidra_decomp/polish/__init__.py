@@ -18,12 +18,14 @@ def _register_transforms() -> list[tuple[str, callable]]:
     from .bool_simplify import simplify_booleans
     from .cast_cleanup import remove_redundant_casts
     from .dead_vars import eliminate_dead_variables
+    from .loop_normalize import normalize_loops
 
     _TRANSFORMS.extend(
         [
             ("dead_vars", eliminate_dead_variables),
             ("bool_simplify", simplify_booleans),
             ("cast_cleanup", remove_redundant_casts),
+            ("loop_normalize", normalize_loops),
         ]
     )
     return _TRANSFORMS

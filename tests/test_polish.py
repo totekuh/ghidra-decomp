@@ -7,6 +7,7 @@ from ghidra_decomp.polish._parser import is_parseable
 from ghidra_decomp.polish.bool_simplify import simplify_booleans
 from ghidra_decomp.polish.cast_cleanup import remove_redundant_casts
 from ghidra_decomp.polish.dead_vars import eliminate_dead_variables
+from ghidra_decomp.polish.loop_normalize import normalize_loops
 from ghidra_decomp.polish.prelude import (
     GHIDRA_PRELUDE,
     inject_prelude,
@@ -306,3 +307,189 @@ def test_polish_handles_unparseable_gracefully():
     result, flag = polish(code)
     assert flag is False
     assert result == code
+
+
+# ── Loop normalization ───────────────────────────────────────────────
+
+
+def _ln(body: str) -> str:
+    code = P + body
+    result = normalize_loops(code)
+    return strip_prelude(result)
+
+
+def test_while_to_for_basic():
+    code = """\
+uint f(uint len) {
+    uint i;
+    uint sum;
+    sum = 0;
+    i = 0;
+    while (i < len) {
+        sum = sum + i;
+        i = i + 1;
+    }
+    return sum;
+}
+"""
+    result = _ln(code)
+    assert "for (i = 0; i < len; i = i + 1)" in result
+    assert "while" not in result
+    assert "sum = sum + i;" in result
+
+
+def test_while_to_for_preserves_body():
+    code = """\
+uint f(uint n) {
+    uint i;
+    uint a;
+    uint b;
+    i = 0;
+    while (i < n) {
+        a = i * 2;
+        b = a + 1;
+        do_stuff(b);
+        i = i + 1;
+    }
+    return 0;
+}
+"""
+    result = _ln(code)
+    assert "for (i = 0;" in result
+    assert "a = i * 2;" in result
+    assert "b = a + 1;" in result
+    assert "do_stuff(b);" in result
+
+
+def test_while_to_for_skips_when_var_modified_in_body():
+    code = """\
+uint f(uint n) {
+    uint i;
+    i = 0;
+    while (i < n) {
+        i = i * 2;
+        i = i + 1;
+    }
+    return i;
+}
+"""
+    result = _ln(code)
+    assert "while" in result
+    assert "for" not in result
+
+
+def test_while_to_for_skips_when_no_init():
+    code = """\
+uint f(uint i, uint n) {
+    while (i < n) {
+        i = i + 1;
+    }
+    return i;
+}
+"""
+    result = _ln(code)
+    assert "while" in result
+
+
+def test_while_to_for_skips_when_no_increment():
+    code = """\
+uint f(uint n) {
+    uint i;
+    i = 0;
+    while (i < n) {
+        do_stuff(i);
+    }
+    return i;
+}
+"""
+    result = _ln(code)
+    assert "while" in result
+
+
+def test_fill_empty_for_init():
+    code = """\
+uint f(uint n) {
+    uint i;
+    i = 0;
+    for (; i < n; i = i + 1) {
+        do_stuff(i);
+    }
+    return i;
+}
+"""
+    result = _ln(code)
+    assert "for (i = 0; i < n;" in result
+    lines = [l.strip() for l in result.split("\n")]
+    assert "i = 0;" not in lines
+
+
+def test_fill_empty_for_skips_unrelated_init():
+    code = """\
+uint f(uint n) {
+    uint j;
+    j = 99;
+    for (; n > 0; n = n - 1) {
+        do_stuff(n);
+    }
+    return j;
+}
+"""
+    result = _ln(code)
+    assert "j = 99;" in result
+    assert "for (;" in result
+
+
+def test_while_true_break_to_while():
+    code = """\
+uint f(uint x) {
+    while (1) {
+        if (x > 10) break;
+        x = x + 1;
+    }
+    return x;
+}
+"""
+    result = _ln(code)
+    assert "while (x <= 10)" in result
+    assert "break" not in result
+    assert "x = x + 1;" in result
+
+
+def test_while_true_break_negates_equality():
+    code = """\
+uint f(uint x, uint y) {
+    while (1) {
+        if (x == y) break;
+        x = x + 1;
+    }
+    return x;
+}
+"""
+    result = _ln(code)
+    assert "while (x != y)" in result
+    assert "break" not in result
+
+
+def test_pipeline_includes_loop_normalize():
+    code = """\
+uint f(uint len) {
+    uint i;
+    uint dead;
+    uint sum;
+    dead = 42;
+    sum = 0;
+    i = 0;
+    while (i < len) {
+        if (i != 0) {
+            sum = sum + i;
+        }
+        i = i + 1;
+    }
+    return sum;
+}
+"""
+    result, flag = polish(code)
+    assert flag is True
+    assert "dead" not in result
+    assert "for (i = 0;" in result
+    assert "if (i)" in result

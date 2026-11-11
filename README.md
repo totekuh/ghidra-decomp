@@ -44,6 +44,14 @@ ghidra-decomp ./firmware.bin -o ./firmware_decomp
 | `--gdt` | Apply a Ghidra data type archive. Repeatable. | none |
 | `--gzf` | Also export `program.gzf` | off |
 | `--semgrep-config` | Scan pseudocode with semgrep, write `semgrep.sarif` | off |
+| `--verbose-analysis` | Attach console monitor to Ghidra auto-analysis | off |
+| `--mermaid` | Render call graphs as Mermaid flowcharts in `callgraphs/` | off |
+| `--cpp-export` | Export single `.c` + `.h` via Ghidra's CppExporter | off |
+| `--max-ram-percent` | JVM MaxRAMPercentage for heap sizing (1.0–100.0) | 50.0 |
+| `--print-jvm-flags` | Print JVM flag values at startup | off |
+| `--callgraph-depth` | Neighborhood hops for per-function Mermaid (1–10) | 1 |
+| `--condense-threshold` | Collapse whole-graph Mermaid when edges exceed N | none |
+| `--reachable FROM TO` | Check if FROM can reach TO in the call graph | none |
 
 ## Output
 
@@ -64,6 +72,14 @@ firmware_decomp/
 ├── types.json
 ├── functions.json
 ├── callgraph.json
+├── callgraphs/          # --mermaid
+│   ├── callgraph.md
+│   ├── endpoints.json
+│   ├── reachability.json  # --reachable
+│   ├── paths.md           # --reachable --mermaid
+│   └── <function>.md
+├── export.c             # --cpp-export
+├── export.h             # --cpp-export
 ├── strings.json
 ├── imports.json
 ├── exports.json
@@ -73,6 +89,27 @@ firmware_decomp/
 ```
 
 See [docs/output-format.md](docs/output-format.md) for the full artifact contract, sidecar structure, type records, and manifest semantics.
+
+## Callgraph Queries (no Ghidra needed)
+
+Query a previous export's `callgraph.json` without starting Ghidra:
+
+```bash
+# Find root and leaf functions
+ghidra-decomp-query endpoints ./firmware_decomp
+
+# Check if main can reach encrypt_data
+ghidra-decomp-query reachable ./firmware_decomp main encrypt_data
+
+# Find all paths between two functions
+ghidra-decomp-query paths ./firmware_decomp main encrypt_data --max-depth 50
+```
+
+## Docker
+
+```bash
+docker compose run --rm ghidra-decomp ./firmware.bin -o /output/firmware_decomp
+```
 
 ## Workflow
 

@@ -256,7 +256,8 @@ class TestCliPdbRouting:
             raise RuntimeError("intercepted")
 
         monkeypatch.setattr(
-            "ghidra_decomp.decompiler._start_pyghidra", _raise,
+            "ghidra_decomp.decompiler._start_pyghidra",
+            _raise,
         )
 
     def test_pdb_none_suppresses_rsds_detection(self, tmp_path, monkeypatch):
@@ -363,7 +364,8 @@ class TestPromptIntegration:
             raise RuntimeError("intercepted")
 
         monkeypatch.setattr(
-            "ghidra_decomp.decompiler._start_pyghidra", _raise,
+            "ghidra_decomp.decompiler._start_pyghidra",
+            _raise,
         )
 
     def test_default_mode_detects_pe_and_would_prompt(self, tmp_path, monkeypatch):
@@ -541,8 +543,13 @@ class TestGhidraE2ePdb:
     ):
         output = tmp_path / "corpus"
         run_export(
-            PE_EXE, output, "--pdb", "none",
-            ghidra_path=ghidra_path, env=cache_home, timeout=600,
+            PE_EXE,
+            output,
+            "--pdb",
+            "none",
+            ghidra_path=ghidra_path,
+            env=cache_home,
+            timeout=600,
         )
 
         manifest = load_json(output, "manifest.json")
@@ -561,8 +568,13 @@ class TestGhidraE2ePdb:
             pytest.skip("symbol server unreachable")
         output = tmp_path / "corpus"
         run_export(
-            PE_EXE, output, "--pdb", "auto",
-            ghidra_path=ghidra_path, env=cache_home, timeout=600,
+            PE_EXE,
+            output,
+            "--pdb",
+            "auto",
+            ghidra_path=ghidra_path,
+            env=cache_home,
+            timeout=600,
         )
 
         manifest = load_json(output, "manifest.json")
@@ -587,8 +599,13 @@ class TestGhidraE2ePdb:
             pytest.skip("symbol server unreachable")
         output = tmp_path / "corpus"
         run_export(
-            PE_EXE, output, "--pdb", "auto",
-            ghidra_path=ghidra_path, env=cache_home, timeout=600,
+            PE_EXE,
+            output,
+            "--pdb",
+            "auto",
+            ghidra_path=ghidra_path,
+            env=cache_home,
+            timeout=600,
         )
 
         manifest = load_json(output, "manifest.json")
@@ -607,9 +624,7 @@ class TestGhidraE2ePdb:
             f"Named functions {named} not found in pseudocode"
         )
 
-    def test_hostname_pdb_vs_no_pdb_diff(
-        self, tmp_path, ghidra_path, cache_home
-    ):
+    def test_hostname_pdb_vs_no_pdb_diff(self, tmp_path, ghidra_path, cache_home):
         """PDB export should have strictly more named functions than bare export."""
         if not network_available():
             pytest.skip("symbol server unreachable")
@@ -618,12 +633,22 @@ class TestGhidraE2ePdb:
         out_pdb = tmp_path / "pdb"
 
         run_export(
-            PE_EXE, out_bare, "--pdb", "none",
-            ghidra_path=ghidra_path, env=cache_home, timeout=600,
+            PE_EXE,
+            out_bare,
+            "--pdb",
+            "none",
+            ghidra_path=ghidra_path,
+            env=cache_home,
+            timeout=600,
         )
         run_export(
-            PE_EXE, out_pdb, "--pdb", "auto",
-            ghidra_path=ghidra_path, env=cache_home, timeout=600,
+            PE_EXE,
+            out_pdb,
+            "--pdb",
+            "auto",
+            ghidra_path=ghidra_path,
+            env=cache_home,
+            timeout=600,
         )
 
         if load_json(out_pdb, "manifest.json")["analysis"]["pdb"] is None:
@@ -646,8 +671,13 @@ class TestGhidraE2ePdb:
             pytest.skip("symbol server unreachable")
         output = tmp_path / "corpus"
         run_export(
-            PE_DLL, output, "--pdb", "auto",
-            ghidra_path=ghidra_path, env=cache_home, timeout=600,
+            PE_DLL,
+            output,
+            "--pdb",
+            "auto",
+            ghidra_path=ghidra_path,
+            env=cache_home,
+            timeout=600,
         )
 
         manifest = load_json(output, "manifest.json")
@@ -662,15 +692,18 @@ class TestGhidraE2ePdb:
         named = {n for n in names if not n.startswith("FUN_")}
         assert len(named) > 0, f"version.dll PDB loaded but no named functions: {names}"
 
-    def test_pdb_auto_on_elf_is_silent_skip(
-        self, tmp_path, ghidra_path, cache_home
-    ):
+    def test_pdb_auto_on_elf_is_silent_skip(self, tmp_path, ghidra_path, cache_home):
         if not ELF.is_file():
             pytest.skip("sample fixture not available")
         output = tmp_path / "corpus"
         run_export(
-            ELF, output, "--pdb", "auto",
-            ghidra_path=ghidra_path, env=cache_home, timeout=600,
+            ELF,
+            output,
+            "--pdb",
+            "auto",
+            ghidra_path=ghidra_path,
+            env=cache_home,
+            timeout=600,
         )
         manifest = load_json(output, "manifest.json")
         assert manifest["status"] == "complete"
@@ -682,8 +715,10 @@ class TestGhidraE2ePdb:
         result = run_export(
             PE_EXE,
             tmp_path / "corpus",
-            "--pdb", str(tmp_path / "absent.pdb"),
-            ghidra_path=ghidra_path, env=cache_home,
+            "--pdb",
+            str(tmp_path / "absent.pdb"),
+            ghidra_path=ghidra_path,
+            env=cache_home,
             check=False,
         )
         assert result.returncode != 0
@@ -698,12 +733,22 @@ class TestGhidraE2ePdb:
         out_auto = tmp_path / "with_pdb"
 
         run_export(
-            PE_EXE, out_none, "--pdb", "none",
-            ghidra_path=ghidra_path, env=cache_home, timeout=600,
+            PE_EXE,
+            out_none,
+            "--pdb",
+            "none",
+            ghidra_path=ghidra_path,
+            env=cache_home,
+            timeout=600,
         )
         run_export(
-            PE_EXE, out_auto, "--pdb", "auto",
-            ghidra_path=ghidra_path, env=cache_home, timeout=600,
+            PE_EXE,
+            out_auto,
+            "--pdb",
+            "auto",
+            ghidra_path=ghidra_path,
+            env=cache_home,
+            timeout=600,
         )
 
         man_none = load_json(out_none, "manifest.json")

@@ -101,7 +101,9 @@ def parse_rsds(binary: Path) -> RsdsInfo | None:
         guid_bytes = data[dptr + 4 : dptr + 20]
         age = struct.unpack_from("<I", data, dptr + 20)[0]
         pdb_path_raw = data[dptr + 24 : dptr + dsize]
-        pdb_path_str = pdb_path_raw.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+        pdb_path_str = pdb_path_raw.split(b"\x00", 1)[0].decode(
+            "utf-8", errors="replace"
+        )
 
         d1 = struct.unpack_from("<I", guid_bytes, 0)[0]
         d2 = struct.unpack_from("<H", guid_bytes, 4)[0]
@@ -109,7 +111,9 @@ def parse_rsds(binary: Path) -> RsdsInfo | None:
         d4 = guid_bytes[8:16].hex().upper()
         guid = f"{d1:08X}{d2:04X}{d3:04X}{d4}"
 
-        pdb_name = pdb_path_str.rsplit("\\", 1)[-1] if "\\" in pdb_path_str else pdb_path_str
+        pdb_name = (
+            pdb_path_str.rsplit("\\", 1)[-1] if "\\" in pdb_path_str else pdb_path_str
+        )
 
         return RsdsInfo(guid=guid, age=age, pdb_name=pdb_name, pdb_path=pdb_path_str)
 

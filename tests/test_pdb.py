@@ -60,7 +60,9 @@ def _build_pe_rsds_fixture(path: Path, *, pe32_plus: bool = True) -> None:
     else:
         struct.pack_into("<H", buf, opt, 0x10B)  # Magic PE32
         dd_base = opt + 96
-    struct.pack_into("<I", buf, opt + (108 if pe32_plus else 92), 7)  # NumberOfRvaAndSizes
+    struct.pack_into(
+        "<I", buf, opt + (108 if pe32_plus else 92), 7
+    )  # NumberOfRvaAndSizes
 
     # Data directory[6] = debug directory
     debug_rva = 0x200
@@ -328,25 +330,35 @@ class TestPromptPdbFetch:
     INFO = RsdsInfo(guid="AABB", age=1, pdb_name="test.pdb", pdb_path="test.pdb")
 
     def test_returns_false_when_not_tty(self, monkeypatch):
-        monkeypatch.setattr("sys.stdin", type("FakeStdin", (), {"isatty": lambda self: False})())
+        monkeypatch.setattr(
+            "sys.stdin", type("FakeStdin", (), {"isatty": lambda self: False})()
+        )
         assert prompt_pdb_fetch(self.INFO) is False
 
     def test_returns_true_on_empty_input(self, monkeypatch):
-        monkeypatch.setattr("sys.stdin", type("FakeStdin", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr(
+            "sys.stdin", type("FakeStdin", (), {"isatty": lambda self: True})()
+        )
         monkeypatch.setattr("builtins.input", lambda: "")
         assert prompt_pdb_fetch(self.INFO) is True
 
     def test_returns_true_on_y(self, monkeypatch):
-        monkeypatch.setattr("sys.stdin", type("FakeStdin", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr(
+            "sys.stdin", type("FakeStdin", (), {"isatty": lambda self: True})()
+        )
         monkeypatch.setattr("builtins.input", lambda: "y")
         assert prompt_pdb_fetch(self.INFO) is True
 
     def test_returns_false_on_n(self, monkeypatch):
-        monkeypatch.setattr("sys.stdin", type("FakeStdin", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr(
+            "sys.stdin", type("FakeStdin", (), {"isatty": lambda self: True})()
+        )
         monkeypatch.setattr("builtins.input", lambda: "n")
         assert prompt_pdb_fetch(self.INFO) is False
 
     def test_returns_false_on_eof(self, monkeypatch):
-        monkeypatch.setattr("sys.stdin", type("FakeStdin", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr(
+            "sys.stdin", type("FakeStdin", (), {"isatty": lambda self: True})()
+        )
         monkeypatch.setattr("builtins.input", lambda: (_ for _ in ()).throw(EOFError))
         assert prompt_pdb_fetch(self.INFO) is False

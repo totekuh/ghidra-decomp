@@ -120,6 +120,34 @@ __attribute__((noinline, used)) u32 combined_test(u32 x, u32 y) {
     return result;
 }
 
+/* Loop pattern: manual iteration that Ghidra may emit as while.
+ * At -O0 the compiler keeps the separate init/test/increment steps
+ * on the stack, so Ghidra's decompiler often fails to reconstruct
+ * this as a for loop. */
+__attribute__((noinline, used)) u32 loop_sum_test(const u32 *arr, u32 len) {
+    u32 i;
+    u32 sum;
+    sum = 0;
+    i = 0;
+    while (i < len) {
+        sum = sum + arr[i];
+        i = i + 1;
+    }
+    return sum;
+}
+
+/* While(1) + break pattern that appears in protocol/dispatch loops. */
+__attribute__((noinline, used)) u32 loop_break_test(volatile u32 *counter) {
+    u32 val;
+    val = *counter;
+    while (1) {
+        if (val == 0) break;
+        val = val - 1;
+        *counter = val;
+    }
+    return val;
+}
+
 /* Entry point. */
 __attribute__((used)) u32 entry(void) {
     u32 r1 = dead_var_test(42);
@@ -130,6 +158,8 @@ __attribute__((used)) u32 entry(void) {
     u32 r4 = ptr_cast_test(data);
     u32 r5 = nested_bool_test(r3, r4, r1);
     u32 r6 = combined_test(r5, r1);
-    sink = r6;
-    return r6;
+    u32 r7 = loop_sum_test(data, 3);
+    u32 r8 = loop_break_test(&sink);
+    sink = r6 ^ r7 ^ r8;
+    return sink;
 }

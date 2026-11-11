@@ -160,6 +160,9 @@ def test_publish_directory_restores_backup_when_publication_fails(
         real_replace(source, destination)
 
     monkeypatch.setattr("ghidra_decomp.artifacts.os.replace", fail_staging_publish)
+    monkeypatch.setattr(
+        "ghidra_decomp.artifacts._try_atomic_exchange", lambda s, t: False
+    )
 
     with pytest.raises(OSError, match="injected publication failure"):
         publish_directory(staging, output, expected)
@@ -353,6 +356,7 @@ def test_timeout_must_be_positive():
 def test_combined_option_is_forwarded(tmp_path, monkeypatch, argument, expected):
     binary = tmp_path / "input.bin"
     binary.write_bytes(b"input")
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     received = []
 
     def fake_decompile_binary(*args, **kwargs):
@@ -466,18 +470,14 @@ def test_a_foreign_schema_corpus_is_never_replaced(tmp_path):
 @pytest.mark.parametrize(
     ("arguments", "expected"),
     [
-        ([], {"cache_enabled": True, "resume": False}),
-        (["--no-cache"], {"cache_enabled": False, "resume": False}),
-        (["--resume"], {"cache_enabled": True, "resume": True}),
-        (["--force-analysis"], {"force_analysis": True, "force_export": False}),
-        (["--force-export"], {"force_analysis": False, "force_export": True}),
+        ([], {"resume": False}),
+        (["--resume"], {"resume": True}),
     ],
 )
-def test_cache_and_resume_options_are_forwarded(
-    tmp_path, monkeypatch, arguments, expected
-):
+def test_resume_option_is_forwarded(tmp_path, monkeypatch, arguments, expected):
     binary = tmp_path / "input.bin"
     binary.write_bytes(b"input")
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     received = {}
 
     def fake_decompile_binary(*args, **kwargs):
@@ -490,35 +490,6 @@ def test_cache_and_resume_options_are_forwarded(
     assert result.exit_code == 0
     for key, value in expected.items():
         assert received[key] == value
-
-
-def test_cache_dir_is_forwarded_as_a_path(tmp_path, monkeypatch):
-    binary = tmp_path / "input.bin"
-    binary.write_bytes(b"input")
-    received = {}
-    monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
-        lambda *args, **kwargs: received.update(kwargs),
-    )
-
-    result = CliRunner().invoke(
-        main, [str(binary), "--cache-dir", str(tmp_path / "cache")]
-    )
-
-    assert result.exit_code == 0
-    assert received["cache_dir"] == tmp_path / "cache"
-
-
-def test_cache_dir_cannot_be_combined_with_no_cache(tmp_path):
-    binary = tmp_path / "input.bin"
-    binary.write_bytes(b"input")
-
-    result = CliRunner().invoke(
-        main, [str(binary), "--no-cache", "--cache-dir", str(tmp_path / "cache")]
-    )
-
-    assert result.exit_code != 0
-    assert "cannot be combined with --no-cache" in result.output
 
 
 @pytest.mark.parametrize(
@@ -536,6 +507,7 @@ def test_worker_and_filter_options_are_forwarded(
 ):
     binary = tmp_path / "input.bin"
     binary.write_bytes(b"input")
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     received = {}
     monkeypatch.setattr(
         "ghidra_decomp.cli.decompile_binary",
@@ -561,6 +533,7 @@ def test_worker_count_must_be_positive(tmp_path):
 def test_secondary_product_options_are_forwarded(tmp_path, monkeypatch):
     binary = tmp_path / "input.bin"
     binary.write_bytes(b"input")
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     archive = tmp_path / "types.gdt"
     archive.write_bytes(b"archive")
     received = {}

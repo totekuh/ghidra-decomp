@@ -54,8 +54,7 @@ def test_manifest_is_complete_and_fingerprinted(system_decomp):
     assert export["timeout"] == 30
     assert export["resumed"] is False
     assert 1 <= export["workers"] <= 4
-    assert manifest["cache"]["enabled"] is True
-    assert manifest["cache"]["reason"]
+    assert "cache" not in manifest
     assert not (output / ".run-state.json").exists()
 
     counts = manifest["counts"]

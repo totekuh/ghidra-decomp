@@ -12,10 +12,10 @@
 ## Reproducible analysis
 
 - [x] Add `manifest.json` with a schema version, input SHA-256 and size, Ghidra and tool versions, language/compiler IDs, image base, entry points, analysis settings, output paths, function status counts, and completion status.
-- [x] Cache completed analysis by binary hash and analysis settings.
+- [~] ~~Cache completed analysis by binary hash and analysis settings.~~ Removed: each run uses a fresh temporary project.
 - [x] Add resumable output so interrupted runs keep valid artifacts and retry only missing or failed functions.
 - [x] Write the completion manifest last and replace generated indexes atomically.
-- [x] Retain a fingerprinted Ghidra project, disabled with `--no-cache`.
+- [~] ~~Retain a fingerprinted Ghidra project, disabled with `--no-cache`.~~ Removed.
 
 ## Output efficiency
 
@@ -77,7 +77,7 @@ Surveyed on 2026-08-15. All candidates use Ghidra's decompiler, so the useful di
 
 | Candidate | Advantages | Gaps for this pipeline | Decision |
 | --- | --- | --- | --- |
-| [`ghidrecomp`](https://github.com/clearbluejar/ghidrecomp) 0.5.9 | Threaded per-function decompilation, persistent projects, file-level resume, regex filters, PDB symbol servers, GDT application, GZF and BSim export, callgraph rendering, Semgrep/SARIF integration | No structured function/string/symbol/type/section indexes, generic xrefs, normal assembly, stack storage, analysis fingerprint, or raw-binary base/entry/language/compiler controls; cache validity is weak; GPL-3.0 | Do not replace the current exporter. Reimplement its project reuse, bounded parallelism, filtering, symbol/GDT support, GZF/BSim, and optional SAST concepts without copying GPL code. |
+| [`ghidrecomp`](https://github.com/clearbluejar/ghidrecomp) 0.5.9 | Threaded per-function decompilation, persistent projects, file-level resume, regex filters, PDB symbol servers, GDT application, GZF and BSim export, callgraph rendering, Semgrep/SARIF integration | No structured function/string/symbol/type/section indexes, generic xrefs, normal assembly, stack storage, analysis fingerprint, or raw-binary base/entry/language/compiler controls; GPL-3.0 | Do not replace the current exporter. Reimplement its bounded parallelism, filtering, symbol/GDT support, GZF/BSim, and optional SAST concepts without copying GPL code. |
 | [Official Ghidra `analyzeHeadless`](https://github.com/NationalSecurityAgency/ghidra) with a custom post-script | Supported persistent-project lifecycle, recursive import and processing, analyzer controls, CPU limits, full Java API, Apache-2.0 | No stock AI-readable bulk corpus or resumable per-function manifest; requires maintaining a Java exporter | Keep as a possible execution backend if PyGhidra lifecycle or performance becomes limiting. The current custom exporter remains necessary either way. |
 | [`ghidra-cli`](https://github.com/akiselev/ghidra-cli) | Persistent project, structured functions/symbols/types/strings/xrefs, decompile and callgraph commands, conventional CLI suited to agent queries | Function-at-a-time rather than a resumable decompile-all corpus | Evaluate as an optional live-query layer, not as the bulk exporter. |
 | [`ghidra-mcp`](https://github.com/bethington/ghidra-mcp) | Persistent projects, broad structured analysis and editing API, batch decompilation, headless operation | MCP overhead and no turnkey filesystem corpus or artifact checkpointing | Candidate for optional writeback and exceptional live queries after the filesystem corpus is built. |
@@ -90,7 +90,7 @@ Surveyed on 2026-08-15. All candidates use Ghidra's decompiler, so the useful di
 `ghidrecomp` is the strongest directly comparable turnkey tool, but it optimizes C-file production rather than an evidence-rich analysis corpus. Its best features should become roadmap items here:
 
 - [x] Add bounded parallel decompilation with one `DecompInterface` per worker and explicit per-function timeouts.
-- [x] Reuse a fingerprinted persistent Ghidra project and support selective forced reanalysis.
+- [~] ~~Reuse a fingerprinted persistent Ghidra project and support selective forced reanalysis.~~ Removed; each run uses a fresh project.
 - [x] Add function-name filters and resume only artifacts whose status and fingerprint are valid.
 - [x] Add optional GDT application before decompilation. Symbol-server/PDB lookup is still open.
 - [x] Add optional GZF export. BSim is still open; it needs a BSim database.
@@ -100,7 +100,7 @@ Surveyed on 2026-08-15. All candidates use Ghidra's decompiler, so the useful di
 ### Pipeline decision
 
 - Keep `ghidra-decomp` as the primary bulk exporter because its machine-readable indexes are already a better base for autonomous analysis.
-- Build reproducible caching and resume on top of the completed function artifact contract before adding an interactive bridge.
+- Build on the completed function artifact contract and `--resume` before adding an interactive bridge.
 - Use normal filesystem search and reads for the common path.
 - Add `ghidra-cli` or MCP only for queries absent from the corpus and for writeback to persistent projects.
 - Benchmark alternatives on the same stripped ELF, PE/PDB, and raw firmware fixtures before adopting any backend.

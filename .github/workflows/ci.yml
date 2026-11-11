@@ -39,7 +39,7 @@ jobs:
       - name: Test fixture checksums and provenance without Ghidra
         run: pytest tests/test_multiarch_e2e.py::test_checked_in_fixture_hashes_and_provenance
       - run: >
-          pytest tests/test_artifacts.py tests/test_cache.py
+          pytest tests/test_artifacts.py
           tests/test_decompiler_helpers.py tests/test_filters.py
           tests/test_parallel.py
 

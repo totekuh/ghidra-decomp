@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import errno
 import hashlib
 import importlib
@@ -16,14 +18,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 CORPUS_OWNER = "ghidra-decomp"
 
 # Ownership and reuse are different questions. Ownership answers "did this tool
 # write the directory, so may it be replaced"; reuse answers "is the corpus
 # current enough to skip work". Older schemas stay replaceable so a version bump
 # never strands a corpus this tool produced.
-OWNED_SCHEMA_VERSIONS = frozenset({2, 3, 4, SCHEMA_VERSION})
+OWNED_SCHEMA_VERSIONS = frozenset({2, 3, 4, 5, SCHEMA_VERSION})
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,52 @@ def fsync_tree(root: Path) -> None:
     directories = [Path(path) for path, _, _ in os.walk(root)]
     for directory in reversed(directories):
         fsync_directory(directory)
+
+
+_RENAME_EXCHANGE = 2
+_AT_FDCWD = -100
+_renameat2_fn = None
+_renameat2_resolved = False
+
+
+def _resolve_renameat2():
+    global _renameat2_fn, _renameat2_resolved
+    if _renameat2_resolved:
+        return
+    _renameat2_resolved = True
+    if os.name == "nt":
+        return
+    try:
+        libc_name = ctypes.util.find_library("c")
+        if libc_name is None:
+            return
+        libc = ctypes.CDLL(libc_name, use_errno=True)
+        fn = libc.renameat2
+        fn.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        fn.restype = ctypes.c_int
+        _renameat2_fn = fn
+    except (OSError, AttributeError):
+        pass
+
+
+def _try_atomic_exchange(source: Path, target: Path) -> bool:
+    _resolve_renameat2()
+    if _renameat2_fn is None:
+        return False
+    result = _renameat2_fn(
+        _AT_FDCWD,
+        str(source).encode(),
+        _AT_FDCWD,
+        str(target).encode(),
+        _RENAME_EXCHANGE,
+    )
+    return result == 0
 
 
 def ensure_directory(path: Path) -> None:
@@ -371,6 +419,20 @@ def publish_directory(
                 )
             )
             backup.rmdir()
+
+        if backup is not None and _try_atomic_exchange(staging, output):
+            fsync_directory(output.parent)
+            try:
+                shutil.rmtree(staging)
+                fsync_directory(output.parent)
+            except OSError:
+                try:
+                    os.replace(staging, backup)
+                    fsync_directory(output.parent)
+                except OSError:
+                    pass
+                return backup
+            return None
 
         old_moved = False
         new_moved = False

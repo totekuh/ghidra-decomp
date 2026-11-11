@@ -17,10 +17,9 @@ Do not broadly scan `/home/witchtape`. Work inside this repository or another ex
 - CLI entry point: `ghidra-decomp = ghidra_decomp.cli:main`
 - Core implementation: `src/ghidra_decomp/decompiler.py`
 - Artifact helpers: `src/ghidra_decomp/artifacts.py`
-- Analysis cache: `src/ghidra_decomp/cache.py`
-- Unit tests: `tests/test_artifacts.py`, `tests/test_cache.py`, `tests/test_decompiler_helpers.py`, `tests/test_filters.py`, `tests/test_parallel.py`
-- End-to-end tests: `tests/test_e2e.py`, `tests/test_cache_e2e.py`, `tests/test_multiarch_e2e.py`, and `tests/test_system_e2e.py`, with shared helpers in `tests/conftest.py`
-- Milestones 1 through 3 are complete and covered by unit and live-Ghidra tests. Milestone 4 is partial.
+- Unit tests: `tests/test_artifacts.py`, `tests/test_decompiler_helpers.py`, `tests/test_filters.py`, `tests/test_parallel.py`
+- End-to-end tests: `tests/test_e2e.py`, `tests/test_export_e2e.py`, `tests/test_multiarch_e2e.py`, and `tests/test_system_e2e.py`, with shared helpers in `tests/conftest.py`
+- Milestones 1 and 3 are complete and covered by unit and live-Ghidra tests. Milestone 2 (analysis caching) has been removed. Milestone 4 is partial.
 - `ROADMAP.md` contains the remaining feature backlog and external-tool survey.
 
 ## Current pipeline
@@ -28,17 +27,15 @@ Do not broadly scan `/home/witchtape`. Work inside this repository or another ex
 ```text
 binary
   -> start embedded Ghidra through PyGhidra
-  -> resolve the fingerprinted cache entry and take its ownership lock
-  -> reopen the retained project, or import into a fresh one on a miss
-  -> on a miss: optional rebase, entry-point creation, GDT application, auto-analysis
+  -> import binary into a fresh temporary project
+  -> optional rebase, entry-point creation, GDT application, auto-analysis
   -> select functions through --include/--exclude/--function
   -> decompile on a bounded thread pool, one DecompInterface per worker
   -> reuse hash-valid per-function artifacts when --resume is given
   -> export C, assembly, sidecars, xrefs, and indexes in sibling staging
   -> optional GZF export and semgrep SARIF scan
   -> publish manifest.json as the staged completion marker
-  -> serialize replacement of the previous owned corpus
-  -> mark the cache entry complete once the project is durable
+  -> atomically replace the previous corpus (RENAME_EXCHANGE where available)
 ```
 
 Current output:
@@ -64,7 +61,7 @@ Current output:
 `-- semgrep.sarif                   # only with --semgrep-config
 ```
 
-Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`, `--language`, `--compiler`, `--list-languages`, `--ghidra-path`, `--workers`, `--no-cache`, `--cache-dir`, `--resume`, `--force-analysis`, `--force-export`, `--include`, `--exclude`, `--function`, `--gdt`, `--gzf`, and `--semgrep-config`. `--timeout` must be positive and is never multiplied by retries or worker count.
+Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`, `--language`, `--compiler`, `--list-languages`, `--ghidra-path`, `--workers`, `--resume`, `--include`, `--exclude`, `--function`, `--gdt`, `--gzf`, and `--semgrep-config`. `--timeout` must be positive and is never multiplied by retries or worker count.
 
 ## Verified weaknesses
 
@@ -72,7 +69,7 @@ Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`
 
 - Per-function C, assembly, sidecars, and related global records may still produce a large corpus.
 - Resolved: decompilation runs on a bounded thread pool with one `DecompInterface` per worker.
-- Resolved: the analyzed project is retained under a fingerprinted cache entry and reused.
+- Resolved: each run uses a fresh temporary project. No persistent project cache.
 
 ### Corpus quality
 
@@ -82,12 +79,11 @@ Useful existing controls are `--timeout`, `--combined`, `--base-addr`, `--entry`
 
 ### Reliability
 
-- The default cache root is unusable on Ghidra 12.1.2. A retained project is opened at `$XDG_CACHE_HOME/ghidra-decomp/<fingerprint>`, which falls back to `~/.cache/...`, and Ghidra now rejects any project location containing a path element that starts with a dot: `java.lang.IllegalArgumentException: Path element starting with '.' is not permitted`. Every cached run therefore fails on a machine where `XDG_CACHE_HOME` is unset, which is the common case. `--no-cache` and a dot-free `--cache-dir` both work. This predates the type-record slice and is unrelated to it; the end-to-end suite is currently run with `XDG_CACHE_HOME` pointed at a dot-free directory. Fixing it means choosing a default project location that is not under a dot directory, which changes where the tool stores data.
-- Replacing an existing output uses two serialized directory renames, so readers can briefly observe the output path as absent.
+- Resolved: analysis caching removed. Each run uses a fresh temporary Ghidra project, eliminating the dot-prefixed path issue with Ghidra 12.1.2.
+- Resolved: output replacement uses `renameat2(RENAME_EXCHANGE)` where available (Linux 3.15+), atomically swapping staging and output with no absent-path window. Falls back to the two-rename sequence on other platforms.
 - Writeback into a persistent Ghidra project (renames, types, comments, patches) is still absent.
 - Symbol-server/PDB resolution and BSim export are still absent; both need infrastructure this repository has no fixture for.
 - Resolved: `--resume` hash-validates and reuses per-function artifacts.
-- Resolved: the complete fingerprint is the cache key.
 - Resolved: an abandoned staging directory is swept on the next run, and a live run's staging is protected by an ownership lock.
 
 ## Current artifact contract
@@ -119,7 +115,7 @@ Each function sidecar contains at least:
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "name": "parse_config",
   "address": "00100234",
   "body_ranges": [{"start": "00100234", "end": "0010034f"}],
@@ -175,7 +171,6 @@ Call edges must include the call-site address, target address/name when resolved
 - Image base, entry points, loader, and relevant analysis options.
 - Export options and timeout/worker settings.
 - Counts for discovered, successful, fallback, failed, and skipped functions. `successful`, `fallback`, and `failed` partition the discovered total; `skipped` counts the reused subset and overlaps them.
-- A `cache` block recording whether the analysis was reused and why.
 - Export filters, the pre-filter discovered count, and any secondary products.
 - Paths and hashes for generated indexes.
 
@@ -197,13 +192,14 @@ Use a temporary run-state file inside sibling staging while work is incomplete. 
 
 Keep this milestone serial. Establish deterministic output before adding concurrency or reuse.
 
-### Milestone 2: resumable output and project reuse (complete)
+### Milestone 2: resumable output (complete, project caching removed)
 
-- [x] Derive a cache key from the complete input/analysis fingerprint, not a shortened digest or filename.
-- [x] Retain a Ghidra project in an explicit cache location (`$XDG_CACHE_HOME/ghidra-decomp/<fingerprint>/`).
-- [x] Reopen the project only when the fingerprint and every resolved version match exactly.
-- [x] Add `--resume`, `--force-analysis`, and `--force-export` semantics with clear separation.
-- [x] Skip a function only when its sidecar says success and its artifact hashes still match.
+Analysis caching was removed to eliminate the Ghidra 12.1.2 dot-prefixed path
+issue and because the one-shot workflow does not benefit from retained projects.
+Each run uses a fresh temporary Ghidra project. `--resume` remains and reuses
+per-function artifacts from an existing output whose hashes still match.
+
+- [x] Add `--resume` semantics: skip a function only when its sidecar says success and its artifact hashes still match.
 - [x] Retry fallback and failed functions without rebuilding valid output.
 - [x] Put project cleanup in `finally`; never delete an unrelated directory inferred from output paths.
 
@@ -276,12 +272,9 @@ See `ROADMAP.md` for links and the complete survey table.
 - Implemented a system-binary integration test that decompiles the host's `true` executable and validates manifest/index hashes, sidecars, addressed assembly bytes, xrefs, storage metadata, stack frames, and combined output.
 - Implemented type-record unit tests in `tests/test_decompiler_helpers.py`: built-ins skipped by type rather than by name, the full key set on every kind, explicit and default packing, source-archive provenance, pointer and array unwrapping, the usage cap, and deterministic ordering.
 - Implemented type-record end-to-end assertions in `tests/test_multiarch_e2e.py`: provenance and layout on every record, DWARF-derived types attributed to the program, and every function-kind user resolving to a function in `functions.json`.
-- Verified locally against Ghidra 12.1.2: 305 tests pass, 1 skipped (semgrep absent). The end-to-end suite currently needs `XDG_CACHE_HOME` set to a dot-free directory; see the cache-root defect under Reliability.
-
-- Implemented cache unit tests in `tests/test_cache.py`: key stability, every invalidation input, XDG resolution, entry locking, and the resume predicate.
 - Implemented parallel unit tests in `tests/test_parallel.py`: one interface per worker, never shared across threads, timeout never multiplied, and isolated per-function failures.
 - Implemented filter unit tests in `tests/test_filters.py`.
-- Implemented cache and resume end-to-end tests in `tests/test_cache_e2e.py`, including the determinism gate comparing `--workers 1` against `--workers 4`.
+- Implemented export, resume, filter, GZF, GDT, and semgrep end-to-end tests in `tests/test_export_e2e.py`, including the determinism gate comparing `--workers 1` against `--workers 4`.
 - Shared e2e helpers live in `tests/conftest.py`.
 
 Remaining tests:
@@ -302,10 +295,8 @@ The end-to-end suite requires Ghidra 12+ and can take several minutes. CI instal
 
 ## Next coding slice
 
-Milestones 2 and 3 are complete and Milestone 4 is partial. What remains, in order of value:
+Milestone 4 is partial. What remains, in order of value:
 
-1. Fix the default cache root, which Ghidra 12.1.2 rejects for containing a dot-prefixed path element. Caching is on by default, so the tool fails out of the box wherever `XDG_CACHE_HOME` is unset. The fix is a choice about where the tool stores retained projects, not a one-line change.
-2. Benchmark parallel decompilation on a large binary: wall time, peak JVM memory, and failure behavior. The checked-in fixtures have five functions each and cannot show the difference. Until this is measured, `--workers` defaults conservatively on purpose.
-3. Close the publication gap where readers can briefly observe the output path as absent between the two renames.
-4. Add symbol-server/PDB resolution and BSim export once fixtures and infrastructure exist for them.
-5. Evaluate `ghidra-cli` or MCP for live queries and writeback into a persistent project.
+1. Benchmark parallel decompilation on a large binary: wall time, peak JVM memory, and failure behavior. The checked-in fixtures have five functions each and cannot show the difference. Until this is measured, `--workers` defaults conservatively on purpose.
+2. Add symbol-server/PDB resolution and BSim export once fixtures and infrastructure exist for them.
+3. Evaluate `ghidra-cli` or MCP for live queries and writeback into a persistent project.

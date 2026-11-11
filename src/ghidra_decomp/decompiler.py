@@ -32,22 +32,8 @@ from .artifacts import (
     staging_prefix,
     validate_destination,
 )
-from .cache import (
-    PROJECT_NAME,
-    REASON_BUSY,
-    REASON_DISABLED,
-    REASON_FORCED,
-    CacheOutcome,
-    cache_key_from,
-    default_cache_root,
-    discard_project,
-    entry_lock,
-    entry_path,
-    evaluate_entry,
-    mark_complete,
-    mark_incomplete,
-    resolved_versions,
-)
+
+PROJECT_NAME = "project"
 
 # Per-function decompilation outcomes recorded in sidecars and manifest counts.
 # Every function ends in exactly one of these, so they sum to the discovered
@@ -353,52 +339,6 @@ def list_languages(*, ghidra_path: Path | None = None) -> None:
     click.echo(f"\n{len(descs)} language(s).")
 
 
-def _prepare_cache(
-    run_stack: ExitStack,
-    *,
-    cache_enabled: bool,
-    cache_dir: Path | None,
-    request_fingerprint: dict,
-    versions: dict,
-    force_analysis: bool,
-    fallback_location: Path,
-) -> tuple[CacheOutcome, Path]:
-    """Choose where the Ghidra project lives and whether it may be reused.
-
-    Returns the outcome to record in the manifest and the project location to
-    open. Every failure to reuse falls back to the throwaway location rather
-    than aborting the run.
-    """
-    if not cache_enabled:
-        return (
-            CacheOutcome(False, False, None, REASON_DISABLED),
-            fallback_location,
-        )
-
-    root = (cache_dir or default_cache_root()).expanduser().resolve()
-    entry = entry_path(root, cache_key_from(request_fingerprint))
-    acquired = run_stack.enter_context(entry_lock(entry))
-    if not acquired:
-        # Another run owns this analysis. Sharing one Ghidra project would
-        # corrupt both, so this run works from a temporary project instead.
-        click.echo(f"Cache entry is busy, analyzing without it: {entry}", err=True)
-        return CacheOutcome(True, False, None, REASON_BUSY), fallback_location
-
-    if force_analysis:
-        discard_project(root, entry)
-        hit, reason = False, REASON_FORCED
-    else:
-        hit, reason = evaluate_entry(entry, request_fingerprint, versions)
-        if not hit:
-            # A project that failed validation is never reopened; rebuilding on
-            # top of it would silently mix two analyses.
-            discard_project(root, entry)
-
-    if not hit:
-        mark_incomplete(entry, request_fingerprint)
-    return CacheOutcome(True, hit, entry, reason), entry
-
-
 def decompile_binary(
     binary: Path,
     output: Path,
@@ -410,11 +350,7 @@ def decompile_binary(
     language: str | None = None,
     compiler: str | None = None,
     entry: str | None = None,
-    cache_enabled: bool = True,
-    cache_dir: Path | None = None,
     resume: bool = False,
-    force_analysis: bool = False,
-    force_export: bool = False,
     workers: int | None = None,
     include: tuple[str, ...] | None = None,
     exclude: tuple[str, ...] | None = None,
@@ -489,30 +425,13 @@ def decompile_binary(
             pyghidra = _start_pyghidra(ghidra_path)
             pyghidra_version = getattr(pyghidra, "__version__", "unknown")
 
-            from ghidra.framework import Application
-
-            versions = resolved_versions(
-                ghidra_version=str(Application.getApplicationVersion()),
-                pyghidra_version=pyghidra_version,
-                exporter_version=__version__,
-            )
-            cache_outcome, project_location = _prepare_cache(
-                run_stack,
-                cache_enabled=cache_enabled,
-                cache_dir=cache_dir,
-                request_fingerprint=request_fingerprint,
-                versions=versions,
-                force_analysis=force_analysis,
-                fallback_location=project_dir,
-            )
-
             resume_index: dict[str, dict] = {}
-            if resume and not force_export:
+            if resume:
                 resume_index = load_resume_index(output, request_fingerprint, filters)
 
             open_kwargs: dict[str, object] = {
                 "analyze": False,
-                "project_location": str(project_location),
+                "project_location": str(project_dir),
                 "project_name": PROJECT_NAME,
             }
             if language is not None:
@@ -546,21 +465,16 @@ def decompile_binary(
 
             with stack:
                 program = flat_api.getCurrentProgram()
-                if cache_outcome.hit:
-                    # The retained project already holds the rebase, the entry
-                    # point, and the analysis this fingerprint describes.
-                    click.echo(f"Reusing cached analysis: {cache_outcome.path}")
-                else:
-                    if base_addr is not None:
-                        _rebase_program(program, base_addr)
+                if base_addr is not None:
+                    _rebase_program(program, base_addr)
 
-                    if entry is not None:
-                        _mark_entry(program, flat_api, entry)
+                if entry is not None:
+                    _mark_entry(program, flat_api, entry)
 
-                    if gdt:
-                        _apply_gdts(program, gdt)
+                if gdt:
+                    _apply_gdts(program, gdt)
 
-                    _run_analysis(program, flat_api)
+                _run_analysis(program, flat_api)
                 _export_all(
                     program,
                     input_identity,
@@ -576,17 +490,6 @@ def decompile_binary(
                     semgrep_config=semgrep_config,
                     resume_index=resume_index,
                     resume_source=output if resume_index else None,
-                    cache_block=cache_outcome.as_manifest_block(),
-                )
-
-            # The project only becomes durable when pyghidra closes it, so an
-            # entry is advertised as reusable strictly after that point.
-            if cache_outcome.path is not None and not cache_outcome.hit:
-                mark_complete(
-                    cache_outcome.path,
-                    request_fingerprint,
-                    versions,
-                    requested_analysis,
                 )
 
         try:
@@ -952,7 +855,6 @@ def _export_all(
     semgrep_config: str | None = None,
     resume_index: dict[str, dict] | None = None,
     resume_source: Path | None = None,
-    cache_block: dict | None = None,
 ) -> None:
     """Run all exports against an open Ghidra program."""
     from ghidra.framework import Application
@@ -1247,8 +1149,6 @@ def _export_all(
             "ghidra_version": ghidra_version,
         },
         "analysis": actual_analysis,
-        "cache": cache_block
-        or {"enabled": False, "hit": False, "path": None, "reason": "caching disabled"},
         "export": {
             "timeout": timeout,
             "workers": workers,

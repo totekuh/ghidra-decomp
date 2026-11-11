@@ -75,40 +75,11 @@ from .decompiler import decompile_binary, list_languages
     help="List all available Ghidra language IDs and their compiler specs, then exit.",
 )
 @click.option(
-    "--no-cache",
-    "no_cache",
-    is_flag=True,
-    default=False,
-    help="Do not retain or reuse a Ghidra project. Every run re-imports and "
-    "re-analyzes the binary.",
-)
-@click.option(
-    "--cache-dir",
-    type=click.Path(file_okay=False, path_type=Path),
-    default=None,
-    help="Directory holding retained Ghidra projects. "
-    "Defaults to $XDG_CACHE_HOME/ghidra-decomp.",
-)
-@click.option(
     "--resume",
     is_flag=True,
     default=False,
     help="Reuse per-function artifacts from an existing output whose hashes "
     "still match, re-running only missing, failed, and fallback functions.",
-)
-@click.option(
-    "--force-analysis",
-    "force_analysis",
-    is_flag=True,
-    default=False,
-    help="Ignore any retained project and analyze the binary again.",
-)
-@click.option(
-    "--force-export",
-    "force_export",
-    is_flag=True,
-    default=False,
-    help="Reuse the retained project but rebuild every artifact from scratch.",
 )
 @click.option(
     "--workers",
@@ -134,7 +105,7 @@ from .decompiler import decompile_binary, list_languages
     multiple=True,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="Apply a Ghidra data type archive (.gdt) before analysis. Repeatable; "
-    "changes the analysis, so it changes the cache key.",
+    "changes the analysis fingerprint.",
 )
 @click.option(
     "--gzf",
@@ -167,11 +138,7 @@ def main(
     language: str | None,
     compiler: str | None,
     list_langs: bool,
-    no_cache: bool,
-    cache_dir: Path | None,
     resume: bool,
-    force_analysis: bool,
-    force_export: bool,
     workers: int | None,
     include: tuple[str, ...],
     exclude: tuple[str, ...],
@@ -194,9 +161,6 @@ def main(
 
     if compiler is not None and language is None:
         raise click.UsageError("--compiler requires --language.")
-
-    if no_cache and cache_dir is not None:
-        raise click.UsageError("--cache-dir cannot be combined with --no-cache.")
 
     binary = binary.resolve()
     if output is None:
@@ -225,11 +189,7 @@ def main(
         entry=entry,
         language=language,
         compiler=compiler,
-        cache_enabled=not no_cache,
-        cache_dir=cache_dir,
         resume=resume,
-        force_analysis=force_analysis,
-        force_export=force_export,
         workers=workers,
         include=include,
         exclude=exclude,

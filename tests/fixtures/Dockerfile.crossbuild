@@ -1,0 +1,18 @@
+FROM ubuntu:noble
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        wget gnupg software-properties-common python3 && \
+    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | \
+        gpg --dearmor -o /usr/share/keyrings/llvm.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+        > /etc/apt/sources.list.d/llvm-21.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        clang-21 lld-21 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /fixtures
+COPY tests/fixtures/multiarch.c tests/fixtures/build_multiarch.sh \
+     tests/fixtures/polish_test.c tests/fixtures/build_polish.sh ./
+
+RUN CC=clang-21 LD=ld.lld-21 ./build_multiarch.sh && \
+    CC=clang-21 LD=ld.lld-21 ./build_polish.sh

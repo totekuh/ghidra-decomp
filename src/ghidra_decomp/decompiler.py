@@ -713,6 +713,7 @@ def decompile_binary(
     callgraph_depth: int = 1,
     condense_threshold: int | None = None,
     reachable: tuple[str, str] | None = None,
+    polish: bool = True,
 ) -> None:
     """Decompile a binary and write structured output."""
     binary = binary.resolve()
@@ -888,6 +889,7 @@ def decompile_binary(
                     callgraph_depth=callgraph_depth,
                     condense_threshold=condense_threshold,
                     reachable=reachable,
+                    polish=polish,
                     resume_index=resume_index,
                     resume_source=output if resume_index else None,
                 )
@@ -1303,6 +1305,7 @@ def _export_all(
     callgraph_depth: int = 1,
     condense_threshold: int | None = None,
     reachable: tuple[str, str] | None = None,
+    polish: bool = True,
     resume_index: dict[str, dict] | None = None,
     resume_source: Path | None = None,
 ) -> None:
@@ -1387,6 +1390,7 @@ def _export_all(
         error: str | None
         decompiled_locals: list[dict] = []
         notes: list[dict] = []
+        polished = False
         if not assembly:
             # An empty body settles the outcome regardless of what the
             # decompiler reported for it.
@@ -1396,6 +1400,11 @@ def _export_all(
         else:
             status, error, c_code, decompiled_locals = outcomes[addr]
             notes = _decompiler_notes(c_code)
+            polished = False
+            if status == STATUS_SUCCESS and polish:
+                from .polish import polish as polish_code
+
+                c_code, polished = polish_code(c_code)
             if status == STATUS_SUCCESS:
                 content = header + c_code
             else:
@@ -1448,6 +1457,7 @@ def _export_all(
                     "error": error,
                     "reused": False,
                     "warnings": notes,
+                    "polished": polished,
                 },
             }
         )

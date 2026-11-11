@@ -1,0 +1,17 @@
+format: 1
+source: tests/fixtures/polish_test.c
+build_script: tests/fixtures/build_polish.sh
+source_sha256: b05943685419b59bf508ef1983c5f9a18a4b884ff0e4dc0a366c822c9fd5698a
+build_script_sha256: ec1b161ea5485d8b58d7e5130517b05bd3d2d01c870e52d35a5a251bce1c5e14
+compiler: Debian clang version 21.1.8 (13)
+linker: Debian LLD 21.1.8 (compatible with GNU linkers)
+common_compile_flags: -O0 -g -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -ffile-prefix-map=<fixture-dir>=/fixture-src -fdebug-prefix-map=<fixture-dir>=/fixture-src -fmacro-prefix-map=<fixture-dir>=/fixture-src
+common_link_flags: -e entry --build-id=none
+path_mapping: <fixture-dir>=/fixture-src
+targets:
+  polish_x86_32: target=i386-none-elf; emulation=elf_i386; extra_flags=
+  polish_armv7: target=armv7-none-eabi; emulation=armelf; extra_flags=-mfloat-abi=soft
+  polish_aarch64: target=aarch64-none-elf; emulation=aarch64elf; extra_flags=
+  polish_mipsel: target=mipsel-none-elf; emulation=elf32ltsmip; extra_flags=
+  polish_ppc32: target=powerpc-none-elf; emulation=elf32ppc; extra_flags=
+  polish_riscv64: target=riscv64-none-elf; emulation=elf64lriscv; extra_flags=

@@ -197,6 +197,13 @@ from .decompiler import (
     metavar="FROM TO",
     help="Check if FROM can reach TO in the call graph.",
 )
+@click.option(
+    "--no-polish",
+    "no_polish",
+    is_flag=True,
+    default=False,
+    help="Skip post-processing that cleans up decompiled pseudocode.",
+)
 def main(
     binary: Path | None,
     output: Path | None,
@@ -225,6 +232,7 @@ def main(
     callgraph_depth: int,
     condense_threshold: int | None,
     reachable: tuple[str, str] | None,
+    no_polish: bool,
 ):
     """Decompile BINARY into a browsable source tree.
 
@@ -287,6 +295,7 @@ def main(
         callgraph_depth=callgraph_depth,
         condense_threshold=condense_threshold,
         reachable=reachable,
+        polish=not no_polish,
     )
 
     click.echo(f"\nDone. Output at: {output}")

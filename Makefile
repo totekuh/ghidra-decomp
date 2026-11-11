@@ -1,6 +1,7 @@
 .PHONY: install uninstall test lint
 
 install:
+	pipx uninstall ghidra-decomp || echo "Not installed, skipping uninstall"
 	pipx install --force .
 
 uninstall:

@@ -705,3 +705,60 @@ def test_callgraph_query_options_are_forwarded(
 
     assert result.exit_code == 0
     assert received[key] == expected
+
+
+# -- PDB CLI forwarding -------------------------------------------------------
+
+
+def test_pdb_auto_is_forwarded(tmp_path, monkeypatch):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+    result = CliRunner().invoke(main, [str(binary), "--pdb", "auto"])
+    assert result.exit_code == 0
+    assert received["pdb"] == "auto"
+
+
+def test_pdb_none_is_forwarded(tmp_path, monkeypatch):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+    result = CliRunner().invoke(main, [str(binary), "--pdb", "none"])
+    assert result.exit_code == 0
+    assert received["pdb"] == "none"
+
+
+def test_pdb_path_is_forwarded(tmp_path, monkeypatch):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    pdb = tmp_path / "symbols.pdb"
+    pdb.write_bytes(b"pdb content")
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+    result = CliRunner().invoke(main, [str(binary), "--pdb", str(pdb)])
+    assert result.exit_code == 0
+    assert received["pdb"] == str(pdb)
+
+
+def test_pdb_defaults_to_none_when_omitted(tmp_path, monkeypatch):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+    result = CliRunner().invoke(main, [str(binary)])
+    assert result.exit_code == 0
+    assert received["pdb"] is None

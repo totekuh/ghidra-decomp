@@ -702,6 +702,7 @@ def decompile_binary(
     exclude: tuple[str, ...] | None = None,
     function: tuple[str, ...] | None = None,
     gdt: tuple[str, ...] | None = None,
+    pdb: str | None = None,
     gzf: bool = False,
     semgrep_config: str | None = None,
     verbose_analysis: bool = False,
@@ -741,12 +742,48 @@ def decompile_binary(
             )
         gdt_identity.append({"path": str(path), "sha256": sha256_file(path)})
 
+    # Resolve PDB symbol information for PE binaries.
+    from . import pdb as _pdb
+
+    pdb_resolved_path: Path | None = None
+    rsds_info = None
+    if pdb == "none":
+        pass
+    elif pdb == "auto":
+        rsds_info = _pdb.parse_rsds(binary)
+        if rsds_info is not None:
+            click.echo(f"Detected PDB: {rsds_info.pdb_name} ({rsds_info.guid})")
+            pdb_resolved_path = _pdb.fetch_pdb(rsds_info, _default_pdb_cache())
+            if pdb_resolved_path is not None:
+                click.echo(f"Fetched PDB:  {pdb_resolved_path}")
+            else:
+                click.echo("PDB not available on symbol server, continuing without.")
+    elif pdb is not None:
+        pdb_local = Path(pdb).expanduser().resolve()
+        if not pdb_local.is_file():
+            raise click.BadParameter(
+                f"PDB file not found: {pdb_local}", param_hint="'--pdb'"
+            )
+        pdb_resolved_path = pdb_local
+        rsds_info = _pdb.parse_rsds(binary)
+    else:
+        rsds_info = _pdb.parse_rsds(binary)
+        if rsds_info is not None and _pdb.prompt_pdb_fetch(rsds_info):
+            pdb_resolved_path = _pdb.fetch_pdb(rsds_info, _default_pdb_cache())
+            if pdb_resolved_path is not None:
+                click.echo(f"Fetched PDB:  {pdb_resolved_path}")
+            else:
+                click.echo("PDB not available on symbol server, continuing without.")
+
+    pdb_identity_data = _pdb.pdb_identity(pdb_resolved_path, rsds_info)
+
     requested_analysis = {
         "base_address": base_addr,
         "entry_point": entry,
         "language": language,
         "compiler": compiler,
         "data_type_archives": gdt_identity,
+        "pdb": pdb_identity_data,
     }
     # Validated before Ghidra starts: a typo in a pattern should fail in
     # milliseconds, not after a full analysis.
@@ -828,6 +865,9 @@ def decompile_binary(
 
                 if gdt:
                     _apply_gdts(program, gdt)
+
+                if pdb_resolved_path is not None:
+                    _apply_pdb(program, pdb_resolved_path)
 
                 _run_analysis(program, flat_api, verbose=verbose_analysis)
                 _export_all(
@@ -975,6 +1015,33 @@ def _apply_gdts(program, gdt_paths: tuple[str, ...]) -> list[dict]:
             archive.close()
         applied.append({"path": str(path), "sha256": sha256_file(path)})
     return applied
+
+
+def _apply_pdb(program, pdb_path: Path) -> None:
+    """Register a PDB so Ghidra's built-in analyzer applies it during analysis."""
+    from java.io import File as JavaFile
+
+    click.echo(f"Applying PDB: {pdb_path}")
+    try:
+        from ghidra.app.plugin.core.analysis import PdbUniversalAnalyzer
+
+        PdbUniversalAnalyzer.setPdbFileOption(program, JavaFile(str(pdb_path)))
+    except (ImportError, AttributeError):
+        import shutil as _shutil
+
+        snapshot_dir = Path(program.getExecutablePath()).parent
+        target = snapshot_dir / pdb_path.name
+        if not target.exists():
+            _shutil.copy2(pdb_path, target)
+
+
+def _default_pdb_cache() -> Path:
+    """Return the PDB cache root under XDG_CACHE_HOME."""
+    import os
+
+    configured = os.environ.get("XDG_CACHE_HOME")
+    root = Path(configured) if configured else Path.home() / ".cache"
+    return root / "ghidra-decomp"
 
 
 def _export_gzf(program, destination: Path) -> None:

@@ -118,6 +118,14 @@ from .decompiler import (
     "changes the analysis fingerprint.",
 )
 @click.option(
+    "--pdb",
+    type=str,
+    default=None,
+    help="PDB symbol source: 'auto' (fetch from symbol server), "
+    "'none' (suppress detection), or a local file path. "
+    "Default: detect and prompt interactively.",
+)
+@click.option(
     "--gzf",
     is_flag=True,
     default=False,
@@ -206,6 +214,7 @@ def main(
     exclude: tuple[str, ...],
     function: tuple[str, ...],
     gdt: tuple[Path, ...],
+    pdb: str | None,
     gzf: bool,
     semgrep_config: str | None,
     verbose_analysis: bool,
@@ -248,6 +257,8 @@ def main(
         click.echo(f"Lang:    {language}")
     if compiler is not None:
         click.echo(f"CSpec:   {compiler}")
+    if pdb is not None:
+        click.echo(f"PDB:     {pdb}")
 
     decompile_binary(
         binary,
@@ -265,6 +276,7 @@ def main(
         exclude=exclude,
         function=function,
         gdt=tuple(str(path) for path in gdt),
+        pdb=pdb,
         gzf=gzf,
         semgrep_config=semgrep_config,
         verbose_analysis=verbose_analysis,

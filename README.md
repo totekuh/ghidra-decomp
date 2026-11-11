@@ -42,6 +42,7 @@ ghidra-decomp ./firmware.bin -o ./firmware_decomp
 | `--include` / `--exclude` | Function name regexes. Repeatable. | all |
 | `--function` | Export function at this address. Repeatable. | |
 | `--gdt` | Apply a Ghidra data type archive. Repeatable. | none |
+| `--pdb` | PDB source: `auto` (fetch from symbol server), `none`, or local path | detect+prompt |
 | `--gzf` | Also export `program.gzf` | off |
 | `--semgrep-config` | Scan pseudocode with semgrep, write `semgrep.sarif` | off |
 | `--verbose-analysis` | Attach console monitor to Ghidra auto-analysis | off |

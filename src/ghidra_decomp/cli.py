@@ -1,10 +1,20 @@
 """CLI entry point for ghidra-decomp."""
 
+import json
 from pathlib import Path
 
 import click
 
-from .decompiler import decompile_binary, list_languages
+from .decompiler import (
+    _find_all_paths,
+    _find_endpoints,
+    _is_reachable,
+    _resolve_function,
+    decompile_binary,
+    list_languages,
+)
+
+# ── Export command (the main command) ────────────────────────────────
 
 
 @click.command()
@@ -127,6 +137,58 @@ from .decompiler import decompile_binary, list_languages
     help="Export the function at this entry address regardless of name "
     "filters (e.g. 00101234). Repeatable.",
 )
+@click.option(
+    "--verbose-analysis",
+    is_flag=True,
+    default=False,
+    help="Attach a console monitor to auto-analysis so progress is printed.",
+)
+@click.option(
+    "--mermaid",
+    is_flag=True,
+    default=False,
+    help="Render the call graph as Mermaid flowcharts in callgraphs/.",
+)
+@click.option(
+    "--cpp-export",
+    is_flag=True,
+    default=False,
+    help="Export a single C source file and header via Ghidra's CppExporter.",
+)
+@click.option(
+    "--max-ram-percent",
+    type=click.FloatRange(min=1.0, max=100.0),
+    default=50.0,
+    show_default=True,
+    help="JVM MaxRAMPercentage for heap sizing (1.0-100.0).",
+)
+@click.option(
+    "--print-jvm-flags",
+    is_flag=True,
+    default=False,
+    help="Print JVM flag values at startup (-XX:+PrintFlagsFinal).",
+)
+@click.option(
+    "--callgraph-depth",
+    type=click.IntRange(min=1, max=10),
+    default=1,
+    show_default=True,
+    help="Neighborhood hops for per-function Mermaid callgraphs.",
+)
+@click.option(
+    "--condense-threshold",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Collapse Mermaid whole-graph when edges exceed this count.",
+)
+@click.option(
+    "--reachable",
+    nargs=2,
+    type=str,
+    default=None,
+    metavar="FROM TO",
+    help="Check if FROM can reach TO in the call graph.",
+)
 def main(
     binary: Path | None,
     output: Path | None,
@@ -146,6 +208,14 @@ def main(
     gdt: tuple[Path, ...],
     gzf: bool,
     semgrep_config: str | None,
+    verbose_analysis: bool,
+    mermaid: bool,
+    cpp_export: bool,
+    max_ram_percent: float,
+    print_jvm_flags: bool,
+    callgraph_depth: int,
+    condense_threshold: int | None,
+    reachable: tuple[str, str] | None,
 ):
     """Decompile BINARY into a browsable source tree.
 
@@ -197,9 +267,99 @@ def main(
         gdt=tuple(str(path) for path in gdt),
         gzf=gzf,
         semgrep_config=semgrep_config,
+        verbose_analysis=verbose_analysis,
+        mermaid=mermaid,
+        cpp_export=cpp_export,
+        max_ram_percent=max_ram_percent,
+        print_jvm_flags=print_jvm_flags,
+        callgraph_depth=callgraph_depth,
+        condense_threshold=condense_threshold,
+        reachable=reachable,
     )
 
     click.echo(f"\nDone. Output at: {output}")
+
+
+# ── Query command (standalone, no Ghidra) ────────────────────────────
+
+
+def _load_callgraph(output_dir: Path) -> dict:
+    cg_path = output_dir / "callgraph.json"
+    if not cg_path.is_file():
+        raise click.ClickException(f"No callgraph.json in {output_dir}")
+    return json.loads(cg_path.read_text(encoding="utf-8"))
+
+
+@click.group()
+def query():
+    """Query a previously exported callgraph (no Ghidra needed)."""
+
+
+@query.command("reachable")
+@click.argument(
+    "output_dir", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
+@click.argument("source")
+@click.argument("dest")
+def query_reachable(output_dir: Path, source: str, dest: str):
+    """Check if SOURCE can reach DEST in the call graph."""
+    callgraph = _load_callgraph(output_dir)
+    src = _resolve_function(callgraph, source)
+    dst = _resolve_function(callgraph, dest)
+    reached = _is_reachable(callgraph, src, dst)
+    paths = _find_all_paths(callgraph, src, dst) if reached else []
+    if reached:
+        click.echo(
+            f"Reachable: {callgraph[src]['name']} -> {callgraph[dst]['name']}"
+            f" ({len(paths)} path(s))"
+        )
+        for p in paths[:10]:
+            click.echo("  " + " -> ".join(callgraph[a]["name"] for a in p))
+        if len(paths) > 10:
+            click.echo(f"  ... and {len(paths) - 10} more")
+    else:
+        click.echo(
+            f"Not reachable: {callgraph[src]['name']} -> {callgraph[dst]['name']}"
+        )
+
+
+@query.command("endpoints")
+@click.argument(
+    "output_dir", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
+def query_endpoints(output_dir: Path):
+    """Find root and leaf functions in the call graph."""
+    callgraph = _load_callgraph(output_dir)
+    ep = _find_endpoints(callgraph)
+    click.echo(f"Roots ({len(ep['roots'])}):")
+    for r in ep["roots"]:
+        click.echo(f"  {r['address']}  {r['name']}")
+    click.echo(f"Leaves ({len(ep['leaves'])}):")
+    for item in ep["leaves"]:
+        click.echo(f"  {item['address']}  {item['name']}")
+
+
+@query.command("paths")
+@click.argument(
+    "output_dir", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
+@click.argument("source")
+@click.argument("dest")
+@click.option(
+    "--max-depth", type=int, default=50, show_default=True, help="Maximum path depth."
+)
+def query_paths(output_dir: Path, source: str, dest: str, max_depth: int):
+    """Find all paths from SOURCE to DEST in the call graph."""
+    callgraph = _load_callgraph(output_dir)
+    src = _resolve_function(callgraph, source)
+    dst = _resolve_function(callgraph, dest)
+    paths = _find_all_paths(callgraph, src, dst, max_depth=max_depth)
+    click.echo(
+        f"{len(paths)} path(s) from {callgraph[src]['name']}"
+        f" to {callgraph[dst]['name']}:"
+    )
+    for p in paths:
+        click.echo("  " + " -> ".join(callgraph[a]["name"] for a in p))
 
 
 if __name__ == "__main__":

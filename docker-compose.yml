@@ -1,0 +1,7 @@
+services:
+  ghidra-decomp:
+    build: .
+    volumes:
+      - ./input:/input:ro
+      - ./output:/output
+    entrypoint: ["ghidra-decomp"]

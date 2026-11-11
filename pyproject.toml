@@ -29,6 +29,7 @@ dependencies = [
 
 [project.scripts]
 ghidra-decomp = "ghidra_decomp.cli:main"
+ghidra-decomp-query = "ghidra_decomp.cli:query"
 
 [project.urls]
 Homepage = "https://github.com/totekuh/ghidra-decomp"

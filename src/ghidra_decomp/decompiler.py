@@ -70,6 +70,332 @@ def _artifact_stem(address: str, name: str, max_length: int = 120) -> str:
     return f"{safe_address}_{digest}_{safe_name}"
 
 
+def _mermaid_escape(text: str) -> str:
+    """Escape characters that break Mermaid node labels."""
+    for char in ('"', "<", ">", "&", "|", "{", "}", "(", ")"):
+        text = text.replace(char, f"#{ord(char)};")
+    return text
+
+
+def _mermaid_node_id(address: str) -> str:
+    """Turn an address into a valid Mermaid node ID."""
+    return re.sub(r"[^A-Za-z0-9_]", "_", address)
+
+
+def _render_mermaid_whole(callgraph: dict) -> str:
+    """Render the complete program callgraph as a Mermaid flowchart."""
+    lines = ["flowchart TD"]
+    for address, entry in sorted(callgraph.items()):
+        nid = _mermaid_node_id(address)
+        lines.append(f'    {nid}["{_mermaid_escape(entry["name"])}"]')
+    for address, entry in sorted(callgraph.items()):
+        src = _mermaid_node_id(address)
+        seen: set[str] = set()
+        for call in entry["calls"]:
+            tgt = call.get("target_function_address") or call.get("target_address")
+            if tgt and tgt in callgraph and tgt not in seen:
+                seen.add(tgt)
+                lines.append(f"    {src} --> {_mermaid_node_id(tgt)}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_mermaid_function(callgraph: dict, address: str) -> str:
+    """Render the neighborhood (callers + callees) of one function."""
+    entry = callgraph[address]
+    lines = ["flowchart TD"]
+    nid = _mermaid_node_id(address)
+    lines.append(f'    {nid}["{_mermaid_escape(entry["name"])}"]:::focus')
+    seen: set[str] = set()
+    for call in entry["calls"]:
+        tgt = call.get("target_function_address") or call.get("target_address")
+        if tgt and tgt in callgraph and tgt not in seen:
+            seen.add(tgt)
+            tid = _mermaid_node_id(tgt)
+            lines.append(f'    {tid}["{_mermaid_escape(callgraph[tgt]["name"])}"]')
+            lines.append(f"    {nid} --> {tid}")
+    for caller in entry.get("called_by", []):
+        caddr = caller.get("address")
+        if caddr and caddr in callgraph and caddr not in seen:
+            seen.add(caddr)
+            cid = _mermaid_node_id(caddr)
+            lines.append(f'    {cid}["{_mermaid_escape(callgraph[caddr]["name"])}"]')
+            lines.append(f"    {cid} --> {nid}")
+    lines.append("    classDef focus fill:#f96,stroke:#333")
+    return "\n".join(lines) + "\n"
+
+
+# ── Callgraph traversal and query helpers ────────────────────────────
+
+
+def _callgraph_successors(callgraph: dict, address: str):
+    """Yield resolved successor addresses from a callgraph entry."""
+    entry = callgraph.get(address)
+    if not entry:
+        return
+    for call in entry["calls"]:
+        tgt = call.get("target_function_address") or call.get("target_address")
+        if tgt and tgt in callgraph:
+            yield tgt
+
+
+def _callgraph_predecessors(callgraph: dict, address: str):
+    """Yield predecessor addresses from a callgraph entry."""
+    entry = callgraph.get(address)
+    if not entry:
+        return
+    for caller in entry.get("called_by", []):
+        addr = caller.get("address")
+        if addr and addr in callgraph:
+            yield addr
+
+
+def _resolve_function(callgraph: dict, identifier: str) -> str:
+    """Resolve a name or address to a callgraph address."""
+    if identifier in callgraph:
+        return identifier
+    matches = [addr for addr, e in callgraph.items() if e["name"] == identifier]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(f"Ambiguous name {identifier!r}: matches {', '.join(matches)}")
+    raise ValueError(f"Function not found: {identifier!r}")
+
+
+def _is_reachable(callgraph: dict, source: str, dest: str) -> bool:
+    """BFS reachability test. O(V+E)."""
+    if source not in callgraph or dest not in callgraph:
+        return False
+    if source == dest:
+        return True
+    from collections import deque
+
+    visited = {source}
+    queue = deque([source])
+    while queue:
+        current = queue.popleft()
+        for neighbor in _callgraph_successors(callgraph, current):
+            if neighbor == dest:
+                return True
+            if neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+    return False
+
+
+def _find_all_paths(
+    callgraph: dict, source: str, dest: str, max_depth: int = 50
+) -> list[list[str]]:
+    """DFS backtracking to find all simple paths, depth-bounded."""
+    if source not in callgraph or dest not in callgraph:
+        return []
+    if source == dest:
+        return [[source]]
+    paths: list[list[str]] = []
+    path_set = {source}
+
+    def dfs(current: str, path: list[str]) -> None:
+        if len(path) > max_depth:
+            return
+        for neighbor in _callgraph_successors(callgraph, current):
+            if neighbor == dest:
+                paths.append(path + [neighbor])
+            elif neighbor not in path_set:
+                path_set.add(neighbor)
+                path.append(neighbor)
+                dfs(neighbor, path)
+                path.pop()
+                path_set.discard(neighbor)
+
+    dfs(source, [source])
+    return paths
+
+
+def _find_endpoints(callgraph: dict) -> dict:
+    """Find root functions (no callers) and leaf functions (no callees)."""
+    roots: list[dict] = []
+    leaves: list[dict] = []
+    for address, entry in sorted(callgraph.items()):
+        has_callers = any(True for _ in _callgraph_predecessors(callgraph, address))
+        has_callees = any(True for _ in _callgraph_successors(callgraph, address))
+        rec = {"address": address, "name": entry["name"]}
+        if not has_callers:
+            roots.append(rec)
+        if not has_callees:
+            leaves.append(rec)
+    return {"roots": roots, "leaves": leaves}
+
+
+def _neighborhood_bfs(
+    callgraph: dict, address: str, depth: int = 2
+) -> tuple[dict[str, int], set[tuple[str, str]]]:
+    """BFS both directions to depth N. Returns (visited, edges)."""
+    from collections import deque
+
+    visited: dict[str, int] = {address: 0}
+    queue = deque([(address, 0)])
+    edges: set[tuple[str, str]] = set()
+    while queue:
+        current, d = queue.popleft()
+        if d >= depth:
+            continue
+        for neighbor in _callgraph_successors(callgraph, current):
+            edges.add((current, neighbor))
+            if neighbor not in visited:
+                visited[neighbor] = d + 1
+                queue.append((neighbor, d + 1))
+        for pred in _callgraph_predecessors(callgraph, current):
+            edges.add((pred, current))
+            if pred not in visited:
+                visited[pred] = d + 1
+                queue.append((pred, d + 1))
+    return visited, edges
+
+
+def _condense_graph(callgraph: dict, threshold: int) -> dict | None:
+    """Condense large callgraphs by collapsing middle layers."""
+    from collections import deque
+
+    edge_count = sum(
+        sum(1 for _ in _callgraph_successors(callgraph, addr)) for addr in callgraph
+    )
+    if edge_count <= threshold:
+        return None
+
+    endpoints = _find_endpoints(callgraph)
+    root_addrs = {r["address"] for r in endpoints["roots"]}
+    if not root_addrs and callgraph:
+        root_addrs = {next(iter(callgraph))}
+
+    depth: dict[str, int] = {}
+    queue: deque[str] = deque()
+    for r in root_addrs:
+        depth[r] = 0
+        queue.append(r)
+    while queue:
+        current = queue.popleft()
+        for neighbor in _callgraph_successors(callgraph, current):
+            if neighbor not in depth:
+                depth[neighbor] = depth[current] + 1
+                queue.append(neighbor)
+
+    max_depth = max(depth.values()) if depth else 0
+
+    leaf_addrs = {item["address"] for item in endpoints["leaves"]}
+    if not leaf_addrs:
+        leaf_addrs = root_addrs
+    height: dict[str, int] = {}
+    queue = deque()
+    for item in leaf_addrs:
+        height[item] = 0
+        queue.append(item)
+    while queue:
+        current = queue.popleft()
+        for pred in _callgraph_predecessors(callgraph, current):
+            if pred not in height:
+                height[pred] = height[current] + 1
+                queue.append(pred)
+
+    keep_top = min(2, max_depth)
+    keep_bottom = min(2, max(height.values()) if height else 0)
+    top_nodes = {a for a, d in depth.items() if d <= keep_top}
+    bottom_nodes = {a for a, h in height.items() if h <= keep_bottom} - top_nodes
+    kept = top_nodes | bottom_nodes | root_addrs
+
+    hidden_count = len(callgraph) - len(kept)
+    if hidden_count <= 0:
+        return None
+
+    placeholder = f"... {hidden_count} hidden functions ..."
+    condensed_edges: list[tuple[str, str]] = []
+    to_placeholder: set[str] = set()
+    from_placeholder: set[str] = set()
+    for addr in callgraph:
+        for succ in _callgraph_successors(callgraph, addr):
+            if addr in kept and succ in kept:
+                condensed_edges.append((addr, succ))
+            elif addr in kept and succ not in kept:
+                to_placeholder.add(addr)
+            elif addr not in kept and succ in kept:
+                from_placeholder.add(succ)
+
+    return {
+        "kept": kept,
+        "placeholder": placeholder,
+        "edges": condensed_edges,
+        "to_placeholder": to_placeholder,
+        "from_placeholder": from_placeholder,
+        "hidden_count": hidden_count,
+    }
+
+
+# ── Extended Mermaid renderers ───────────────────────────────────────
+
+
+def _render_mermaid_paths(callgraph: dict, paths: list[list[str]]) -> str:
+    """Render path subgraph with source/dest/path coloring."""
+    if not paths:
+        return "flowchart TD\n"
+    source = paths[0][0]
+    dest = paths[0][-1]
+    nodes: set[str] = set()
+    edges: set[tuple[str, str]] = set()
+    for path in paths:
+        for addr in path:
+            nodes.add(addr)
+        for i in range(len(path) - 1):
+            edges.add((path[i], path[i + 1]))
+    lines = ["flowchart TD"]
+    for addr in sorted(nodes):
+        nid = _mermaid_node_id(addr)
+        label = _mermaid_escape(callgraph[addr]["name"])
+        if addr == source:
+            cls = ":::source"
+        elif addr == dest:
+            cls = ":::dest"
+        else:
+            cls = ":::path"
+        lines.append(f'    {nid}["{label}"]{cls}')
+    for src, dst in sorted(edges):
+        lines.append(f"    {_mermaid_node_id(src)} --> {_mermaid_node_id(dst)}")
+    lines.append("    classDef source fill:#6f6,stroke:#333")
+    lines.append("    classDef dest fill:#f66,stroke:#333")
+    lines.append("    classDef path fill:#ff6,stroke:#333")
+    return "\n".join(lines) + "\n"
+
+
+def _render_mermaid_neighborhood(callgraph: dict, address: str, depth: int = 2) -> str:
+    """Render N-hop neighborhood as Mermaid flowchart."""
+    visited, edges = _neighborhood_bfs(callgraph, address, depth)
+    lines = ["flowchart TD"]
+    for addr in sorted(visited):
+        nid = _mermaid_node_id(addr)
+        label = _mermaid_escape(callgraph[addr]["name"])
+        cls = ":::focus" if addr == address else ""
+        lines.append(f'    {nid}["{label}"]{cls}')
+    for src, dst in sorted(edges):
+        lines.append(f"    {_mermaid_node_id(src)} --> {_mermaid_node_id(dst)}")
+    lines.append("    classDef focus fill:#f96,stroke:#333")
+    return "\n".join(lines) + "\n"
+
+
+def _render_mermaid_condensed(callgraph: dict, condensed: dict) -> str:
+    """Render condensed whole-graph with placeholder for hidden middle."""
+    lines = ["flowchart TD"]
+    for addr in sorted(condensed["kept"]):
+        nid = _mermaid_node_id(addr)
+        lines.append(f'    {nid}["{_mermaid_escape(callgraph[addr]["name"])}"]')
+    pid = "HIDDEN"
+    lines.append(f'    {pid}["{condensed["placeholder"]}"]:::hidden')
+    for src, dst in sorted(condensed["edges"]):
+        lines.append(f"    {_mermaid_node_id(src)} --> {_mermaid_node_id(dst)}")
+    for addr in sorted(condensed["to_placeholder"]):
+        lines.append(f"    {_mermaid_node_id(addr)} --> {pid}")
+    for addr in sorted(condensed["from_placeholder"]):
+        lines.append(f"    {pid} --> {_mermaid_node_id(addr)}")
+    lines.append("    classDef hidden fill:#999,stroke:#333,stroke-dasharray: 5 5")
+    return "\n".join(lines) + "\n"
+
+
 def _failure_comment(error: object) -> str:
     """Render every fallback error line as valid C++-style commentary."""
     lines = str(error).splitlines() or ["decompilation failed"]
@@ -288,7 +614,17 @@ def _func_header_comment(func) -> str:
     return "\n".join(lines)
 
 
-def _start_pyghidra(ghidra_path: Path | None):
+def _build_vm_args(
+    max_ram_percent: float = 50.0, print_jvm_flags: bool = False
+) -> list[str]:
+    """Build JVM arguments for the PyGhidra launcher."""
+    args = [f"-XX:MaxRAMPercentage={max_ram_percent}"]
+    if print_jvm_flags:
+        args.append("-XX:+PrintFlagsFinal")
+    return args
+
+
+def _start_pyghidra(ghidra_path: Path | None, vm_args: list[str] | None = None):
     """Import and start pyghidra, returning the module."""
     try:
         import pyghidra
@@ -300,7 +636,11 @@ def _start_pyghidra(ghidra_path: Path | None):
 
     if not pyghidra.started():
         try:
-            pyghidra.start(install_dir=ghidra_path) if ghidra_path else pyghidra.start()
+            launcher = pyghidra.HeadlessPyGhidraLauncher(install_dir=ghidra_path)
+            if vm_args:
+                for arg in vm_args:
+                    launcher.add_vmargs(arg)
+            launcher.start()
         except Exception as e:  # noqa: BLE001 - Java exceptions have no stable base class
             hint = ""
             if not ghidra_path:
@@ -309,6 +649,12 @@ def _start_pyghidra(ghidra_path: Path | None):
                     "to your Ghidra installation."
                 )
             raise click.ClickException(f"Failed to start Ghidra: {e}{hint}")
+    elif vm_args:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "JVM already started; --max-ram-percent and --print-jvm-flags ignored"
+        )
 
     return pyghidra
 
@@ -358,6 +704,14 @@ def decompile_binary(
     gdt: tuple[str, ...] | None = None,
     gzf: bool = False,
     semgrep_config: str | None = None,
+    verbose_analysis: bool = False,
+    mermaid: bool = False,
+    max_ram_percent: float = 50.0,
+    print_jvm_flags: bool = False,
+    cpp_export: bool = False,
+    callgraph_depth: int = 1,
+    condense_threshold: int | None = None,
+    reachable: tuple[str, str] | None = None,
 ) -> None:
     """Decompile a binary and write structured output."""
     binary = binary.resolve()
@@ -422,7 +776,8 @@ def decompile_binary(
                 },
             )
 
-            pyghidra = _start_pyghidra(ghidra_path)
+            vm_args = _build_vm_args(max_ram_percent, print_jvm_flags)
+            pyghidra = _start_pyghidra(ghidra_path, vm_args=vm_args)
             pyghidra_version = getattr(pyghidra, "__version__", "unknown")
 
             resume_index: dict[str, dict] = {}
@@ -474,7 +829,7 @@ def decompile_binary(
                 if gdt:
                     _apply_gdts(program, gdt)
 
-                _run_analysis(program, flat_api)
+                _run_analysis(program, flat_api, verbose=verbose_analysis)
                 _export_all(
                     program,
                     input_identity,
@@ -488,6 +843,11 @@ def decompile_binary(
                     filters=filters,
                     gzf=gzf,
                     semgrep_config=semgrep_config,
+                    cpp_export=cpp_export,
+                    mermaid=mermaid,
+                    callgraph_depth=callgraph_depth,
+                    condense_threshold=condense_threshold,
+                    reachable=reachable,
                     resume_index=resume_index,
                     resume_source=output if resume_index else None,
                 )
@@ -639,6 +999,19 @@ def _export_gzf(program, destination: Path) -> None:
         raise click.ClickException(f"Ghidra could not write {destination}: {e}")
 
 
+def _export_cpp(program, destination: Path) -> None:
+    """Export a single C file and header via Ghidra's CppExporter."""
+    from ghidra.app.util.exporter import CppExporter
+    from ghidra.util.task import ConsoleTaskMonitor
+    from java.io import File as JavaFile
+
+    monitor = ConsoleTaskMonitor()
+    exporter = CppExporter()
+
+    click.echo("Exporting C/header via CppExporter...")
+    exporter.export(JavaFile(str(destination)), program, program.getMemory(), monitor)
+
+
 def _run_semgrep(config: str, corpus: Path, destination: Path) -> dict:
     """Scan the exported pseudocode, writing SARIF beside the corpus.
 
@@ -673,9 +1046,14 @@ def _run_semgrep(config: str, corpus: Path, destination: Path) -> dict:
     return {"config": config, "exit_code": result.returncode}
 
 
-def _run_analysis(program, flat_api) -> None:
+def _run_analysis(program, flat_api, *, verbose: bool = False) -> None:
     """Run Ghidra's auto-analysis on the program."""
     click.echo("Running auto-analysis...")
+    if verbose:
+        from ghidra.program.flatapi import FlatProgramAPI
+        from ghidra.util.task import ConsoleTaskMonitor
+
+        flat_api = FlatProgramAPI(program, ConsoleTaskMonitor())
     success = False
     tid = program.startTransaction("Auto-analysis")
     try:
@@ -853,6 +1231,11 @@ def _export_all(
     filters: dict,
     gzf: bool = False,
     semgrep_config: str | None = None,
+    cpp_export: bool = False,
+    mermaid: bool = False,
+    callgraph_depth: int = 1,
+    condense_threshold: int | None = None,
+    reachable: tuple[str, str] | None = None,
     resume_index: dict[str, dict] | None = None,
     resume_source: Path | None = None,
 ) -> None:
@@ -1134,6 +1517,78 @@ def _export_all(
             "path": str(sarif_path.relative_to(output)),
         }
         indexed_paths.append(sarif_path)
+    if cpp_export:
+        cpp_path = output / "program.c"
+        _export_cpp(program, cpp_path)
+        indexed_paths.append(cpp_path)
+        secondary["cpp_export"] = str(cpp_path.relative_to(output))
+        header_path = output / "program.h"
+        if header_path.is_file():
+            indexed_paths.append(header_path)
+            secondary["cpp_header"] = str(header_path.relative_to(output))
+    if mermaid:
+        cg_dir = output / "callgraphs"
+        cg_dir.mkdir(exist_ok=True)
+        atomic_write_json(cg_dir / "endpoints.json", _find_endpoints(callgraph))
+        if condense_threshold is not None:
+            condensed = _condense_graph(callgraph, condense_threshold)
+            if condensed is not None:
+                atomic_write_text(
+                    cg_dir / "callgraph.md",
+                    _render_mermaid_condensed(callgraph, condensed),
+                )
+            else:
+                atomic_write_text(
+                    cg_dir / "callgraph.md", _render_mermaid_whole(callgraph)
+                )
+        else:
+            atomic_write_text(cg_dir / "callgraph.md", _render_mermaid_whole(callgraph))
+        for addr, cg_entry in callgraph.items():
+            stem = _artifact_stem(addr, cg_entry["name"])
+            if callgraph_depth > 1:
+                content = _render_mermaid_neighborhood(callgraph, addr, callgraph_depth)
+            else:
+                content = _render_mermaid_function(callgraph, addr)
+            atomic_write_text(cg_dir / f"{stem}.md", content)
+        secondary["mermaid"] = "callgraphs/"
+    if reachable is not None:
+        try:
+            src_addr = _resolve_function(callgraph, reachable[0])
+            dst_addr = _resolve_function(callgraph, reachable[1])
+        except ValueError as e:
+            raise click.ClickException(str(e))
+        reached = _is_reachable(callgraph, src_addr, dst_addr)
+        all_paths = _find_all_paths(callgraph, src_addr, dst_addr) if reached else []
+        reach_result = {
+            "source": {
+                "address": src_addr,
+                "name": callgraph[src_addr]["name"],
+            },
+            "destination": {
+                "address": dst_addr,
+                "name": callgraph[dst_addr]["name"],
+            },
+            "reachable": reached,
+            "path_count": len(all_paths),
+            "paths": [[callgraph[a]["name"] for a in p] for p in all_paths],
+            "paths_by_address": all_paths,
+        }
+        cg_dir = output / "callgraphs"
+        cg_dir.mkdir(exist_ok=True)
+        atomic_write_json(cg_dir / "reachability.json", reach_result)
+        if mermaid and all_paths:
+            atomic_write_text(
+                cg_dir / "paths.md",
+                _render_mermaid_paths(callgraph, all_paths),
+            )
+        src_name = callgraph[src_addr]["name"]
+        dst_name = callgraph[dst_addr]["name"]
+        if reached:
+            click.echo(
+                f"Reachable: {src_name} -> {dst_name} ({len(all_paths)} path(s))"
+            )
+        else:
+            click.echo(f"Not reachable: {src_name} -> {dst_name}")
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "status": "complete",

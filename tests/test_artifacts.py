@@ -255,7 +255,7 @@ def test_failed_rerun_preserves_complete_corpus(tmp_path, monkeypatch):
     )
     (output / "valuable.txt").write_text("preserve")
 
-    def fail_start(_):
+    def fail_start(*_args, **_kwargs):
         raise ClickException("injected startup failure")
 
     monkeypatch.setattr("ghidra_decomp.decompiler._start_pyghidra", fail_start)
@@ -570,3 +570,138 @@ def test_a_missing_data_type_archive_is_rejected_by_the_cli(tmp_path):
 
     assert result.exit_code != 0
     assert "does not exist" in result.output
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ([], False),
+        (["--verbose-analysis"], True),
+    ],
+)
+def test_verbose_analysis_option_is_forwarded(
+    tmp_path, monkeypatch, arguments, expected
+):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+
+    result = CliRunner().invoke(main, [str(binary), *arguments])
+
+    assert result.exit_code == 0
+    assert received["verbose_analysis"] is expected
+
+
+@pytest.mark.parametrize(
+    ("arguments", "key", "expected"),
+    [
+        (["--max-ram-percent", "75"], "max_ram_percent", 75.0),
+        ([], "max_ram_percent", 50.0),
+        (["--print-jvm-flags"], "print_jvm_flags", True),
+        ([], "print_jvm_flags", False),
+    ],
+)
+def test_jvm_options_are_forwarded(tmp_path, monkeypatch, arguments, key, expected):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+
+    result = CliRunner().invoke(main, [str(binary), *arguments])
+
+    assert result.exit_code == 0
+    assert received[key] == expected
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ([], False),
+        (["--mermaid"], True),
+    ],
+)
+def test_mermaid_option_is_forwarded(tmp_path, monkeypatch, arguments, expected):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+
+    result = CliRunner().invoke(main, [str(binary), *arguments])
+
+    assert result.exit_code == 0
+    assert received["mermaid"] is expected
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ([], False),
+        (["--cpp-export"], True),
+    ],
+)
+def test_cpp_export_option_is_forwarded(tmp_path, monkeypatch, arguments, expected):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+
+    result = CliRunner().invoke(main, [str(binary), *arguments])
+
+    assert result.exit_code == 0
+    assert received["cpp_export"] is expected
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "101"])
+def test_max_ram_percent_rejects_out_of_range(tmp_path, value):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+
+    result = CliRunner().invoke(main, [str(binary), "--max-ram-percent", value])
+
+    assert result.exit_code != 0
+
+
+@pytest.mark.parametrize(
+    ("arguments", "key", "expected"),
+    [
+        (["--callgraph-depth", "3"], "callgraph_depth", 3),
+        ([], "callgraph_depth", 1),
+        (["--condense-threshold", "20"], "condense_threshold", 20),
+        ([], "condense_threshold", None),
+        (["--reachable", "main", "add"], "reachable", ("main", "add")),
+        ([], "reachable", None),
+    ],
+)
+def test_callgraph_query_options_are_forwarded(
+    tmp_path, monkeypatch, arguments, key, expected
+):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
+    received = {}
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.decompile_binary",
+        lambda *args, **kwargs: received.update(kwargs),
+    )
+
+    result = CliRunner().invoke(main, [str(binary), *arguments])
+
+    assert result.exit_code == 0
+    assert received[key] == expected

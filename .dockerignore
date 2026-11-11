@@ -1,0 +1,12 @@
+.git
+__pycache__
+*.pyc
+.mypy_cache
+.pytest_cache
+*.egg-info
+dist/
+build/
+output/
+input/
+HANDOFF.md
+ROADMAP.md

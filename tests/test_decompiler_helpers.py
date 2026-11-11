@@ -14,7 +14,9 @@ from ghidra_decomp.decompiler import (
     _addresses_with_status,
     _artifact_stem,
     _body_ranges,
+    _build_vm_args,
     _decompiler_notes,
+    _export_cpp,
     _extract_entry_points,
     _extract_exports,
     _extract_function_references,
@@ -28,7 +30,9 @@ from ghidra_decomp.decompiler import (
     _high_local_record,
     _mark_entry,
     _parse_address,
+    _run_analysis,
     _sanitize_name,
+    _start_pyghidra,
     _summarize_statuses,
     _symbols_at,
     _thunk_target,
@@ -1054,3 +1058,169 @@ def test_records_and_their_uses_come_back_sorted(monkeypatch):
         "00104010",
         "00104020",
     ]
+
+
+# --- _run_analysis verbose/quiet tests ---
+
+
+def test_run_analysis_verbose_creates_monitored_flat_api(monkeypatch):
+    calls = []
+    original_flat_api = SimpleNamespace(
+        analyzeAll=lambda program: calls.append(("original", program))
+    )
+    program = SimpleNamespace(
+        startTransaction=lambda label: 1,
+        endTransaction=lambda tid, success: None,
+    )
+
+    class FakeMonitor:
+        pass
+
+    class FakeFlatProgramAPI:
+        def __init__(self, prog, monitor=None):
+            self.prog = prog
+            self.monitor = monitor
+
+        def analyzeAll(self, prog):
+            calls.append(("monitored", prog, self.monitor is not None))
+
+    flatapi_mod = ModuleType("ghidra.program.flatapi")
+    flatapi_mod.FlatProgramAPI = FakeFlatProgramAPI
+    task_mod = ModuleType("ghidra.util.task")
+    task_mod.ConsoleTaskMonitor = FakeMonitor
+
+    monkeypatch.setitem(sys.modules, "ghidra.program.flatapi", flatapi_mod)
+    monkeypatch.setitem(sys.modules, "ghidra.util.task", task_mod)
+
+    _run_analysis(program, original_flat_api, verbose=True)
+
+    assert len(calls) == 1
+    assert calls[0][0] == "monitored"
+    assert calls[0][2] is True
+
+
+def test_run_analysis_quiet_uses_original_flat_api(monkeypatch):
+    calls = []
+    original_flat_api = SimpleNamespace(
+        analyzeAll=lambda program: calls.append(("original", program))
+    )
+    program = SimpleNamespace(
+        startTransaction=lambda label: 1,
+        endTransaction=lambda tid, success: None,
+    )
+
+    _run_analysis(program, original_flat_api, verbose=False)
+
+    assert len(calls) == 1
+    assert calls[0][0] == "original"
+
+
+# --- _build_vm_args / _start_pyghidra tests ---
+
+
+def test_build_vm_args_default():
+    assert _build_vm_args(50.0, False) == ["-XX:MaxRAMPercentage=50.0"]
+
+
+def test_build_vm_args_with_print_flags():
+    result = _build_vm_args(75.0, True)
+    assert result == ["-XX:MaxRAMPercentage=75.0", "-XX:+PrintFlagsFinal"]
+
+
+def test_start_pyghidra_passes_vm_args(monkeypatch):
+    added_args = []
+
+    class FakeLauncher:
+        def __init__(self, install_dir=None):
+            self.install_dir = install_dir
+
+        def add_vmargs(self, arg):
+            added_args.append(arg)
+
+        def start(self):
+            pass
+
+    fake_pyghidra = SimpleNamespace(
+        started=lambda: False,
+        HeadlessPyGhidraLauncher=FakeLauncher,
+    )
+    monkeypatch.setitem(sys.modules, "pyghidra", fake_pyghidra)
+
+    _start_pyghidra(None, vm_args=["-XX:MaxRAMPercentage=75.0"])
+
+    assert added_args == ["-XX:MaxRAMPercentage=75.0"]
+
+
+def test_start_pyghidra_already_started_warns(monkeypatch, caplog):
+    import logging
+
+    fake_pyghidra = SimpleNamespace(
+        started=lambda: True,
+        start=lambda **kw: None,
+    )
+    monkeypatch.setitem(sys.modules, "pyghidra", fake_pyghidra)
+
+    with caplog.at_level(logging.WARNING):
+        _start_pyghidra(None, vm_args=["-XX:MaxRAMPercentage=75.0"])
+
+    assert "JVM already started" in caplog.text
+
+
+# --- _export_cpp tests ---
+
+
+def test_export_cpp_calls_exporter(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeCppExporter:
+        def export(self, java_file, program, memory, monitor):
+            calls.append((java_file, program, memory, monitor))
+
+    class FakeJavaFile:
+        def __init__(self, path):
+            self.path = path
+
+    class FakeMonitor:
+        pass
+
+    exporter_mod = ModuleType("ghidra.app.util.exporter")
+    exporter_mod.CppExporter = FakeCppExporter
+    task_mod = ModuleType("ghidra.util.task")
+    task_mod.ConsoleTaskMonitor = FakeMonitor
+    java_io_mod = ModuleType("java.io")
+    java_io_mod.File = FakeJavaFile
+
+    monkeypatch.setitem(sys.modules, "ghidra.app.util.exporter", exporter_mod)
+    monkeypatch.setitem(sys.modules, "ghidra.util.task", task_mod)
+    monkeypatch.setitem(sys.modules, "java.io", java_io_mod)
+
+    fake_memory = object()
+    program = SimpleNamespace(getMemory=lambda: fake_memory)
+
+    _export_cpp(program, tmp_path / "program.c")
+
+    assert len(calls) == 1
+    assert calls[0][1] is program
+    assert calls[0][2] is fake_memory
+
+
+def test_export_cpp_propagates_failure(tmp_path, monkeypatch):
+    class FakeCppExporter:
+        def export(self, *args):
+            raise RuntimeError("export failed")
+
+    exporter_mod = ModuleType("ghidra.app.util.exporter")
+    exporter_mod.CppExporter = FakeCppExporter
+    task_mod = ModuleType("ghidra.util.task")
+    task_mod.ConsoleTaskMonitor = lambda: None
+    java_io_mod = ModuleType("java.io")
+    java_io_mod.File = lambda path: path
+
+    monkeypatch.setitem(sys.modules, "ghidra.app.util.exporter", exporter_mod)
+    monkeypatch.setitem(sys.modules, "ghidra.util.task", task_mod)
+    monkeypatch.setitem(sys.modules, "java.io", java_io_mod)
+
+    program = SimpleNamespace(getMemory=lambda: None)
+
+    with pytest.raises(RuntimeError, match="export failed"):
+        _export_cpp(program, tmp_path / "program.c")

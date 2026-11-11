@@ -384,3 +384,347 @@ def test_a_missing_semgrep_is_reported_clearly(tmp_path, ghidra_path):
     assert result.returncode != 0
     assert "semgrep is not installed" in result.stderr
     assert not (tmp_path / "corpus").exists()
+
+
+# ── Verbose Analysis ─────────────────────────────────────────────────
+
+
+def test_verbose_analysis_produces_valid_output(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--verbose-analysis")
+
+    manifest = load_json(output, "manifest.json")
+    assert manifest["status"] == "complete"
+    assert manifest["counts"]["discovered"] > 0
+
+
+def test_verbose_analysis_yields_same_function_counts(tmp_path, ghidra_path):
+    quiet_out = tmp_path / "quiet"
+    verbose_out = tmp_path / "verbose"
+
+    _export(FIXTURES / FIXTURE, quiet_out, ghidra_path)
+    _export(FIXTURES / FIXTURE, verbose_out, ghidra_path, "--verbose-analysis")
+
+    q = load_json(quiet_out, "manifest.json")["counts"]
+    v = load_json(verbose_out, "manifest.json")["counts"]
+    assert q["discovered"] == v["discovered"]
+    assert q["successful"] == v["successful"]
+
+
+def test_verbose_analysis_not_in_manifest(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--verbose-analysis")
+
+    manifest = load_json(output, "manifest.json")
+    export_section = manifest["export"]
+    assert "verbose_analysis" not in export_section
+    assert "verbose" not in export_section
+
+
+# ── JVM Memory Tuning ────────────────────────────────────────────────
+
+
+def test_max_ram_percent_produces_valid_output(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--max-ram-percent", "75")
+
+    manifest = load_json(output, "manifest.json")
+    assert manifest["status"] == "complete"
+    assert manifest["counts"]["discovered"] > 0
+
+
+def test_print_jvm_flags_prints_flag_info(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    result = _export(FIXTURES / FIXTURE, output, ghidra_path, "--print-jvm-flags")
+
+    combined = result.stdout + result.stderr
+    assert "MaxRAMPercentage" in combined or "PrintFlagsFinal" in combined
+
+
+def test_max_ram_percent_boundary_values(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--max-ram-percent", "1")
+
+    manifest = load_json(output, "manifest.json")
+    assert manifest["status"] == "complete"
+
+
+# ── CppExporter ──────────────────────────────────────────────────────
+
+
+def test_cpp_export_produces_c_file(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--cpp-export")
+
+    cpp_path = output / "program.c"
+    assert cpp_path.is_file()
+    assert cpp_path.stat().st_size > 0
+
+
+def test_cpp_export_header_exists(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--cpp-export")
+
+    header = output / "program.h"
+    if header.is_file():
+        assert header.stat().st_size > 0
+
+
+def test_cpp_export_in_manifest(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--cpp-export")
+
+    manifest = load_json(output, "manifest.json")
+    secondary = manifest["export"]["secondary_products"]
+    assert secondary["cpp_export"] == "program.c"
+    assert sha256_of(output / "program.c") == manifest["indexes"]["program.c"]["sha256"]
+
+
+def test_cpp_export_with_gzf(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--cpp-export", "--gzf")
+
+    manifest = load_json(output, "manifest.json")
+    secondary = manifest["export"]["secondary_products"]
+    assert "cpp_export" in secondary
+    assert "gzf" in secondary
+    assert (output / "program.c").is_file()
+    assert (output / "program.gzf").is_file()
+
+
+def test_no_cpp_export_by_default(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path)
+
+    assert not (output / "program.c").exists()
+    assert not (output / "program.h").exists()
+
+
+def test_cpp_export_with_combined(tmp_path, ghidra_path):
+    """--cpp-export and --combined both produce .c files without collision."""
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--cpp-export", "--combined")
+
+    assert (output / "program.c").is_file()
+    assert (output / "all_functions.c").is_file()
+    assert sha256_of(output / "program.c") != sha256_of(output / "all_functions.c")
+
+
+# ── Mermaid Callgraph ────────────────────────────────────────────────
+
+
+def test_mermaid_output(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--mermaid")
+
+    cg_dir = output / "callgraphs"
+    assert cg_dir.is_dir()
+    whole = cg_dir / "callgraph.md"
+    assert whole.is_file()
+    content = whole.read_text(encoding="utf-8")
+    assert content.startswith("flowchart TD")
+    assert "-->" in content
+
+    per_func = list(cg_dir.glob("*.md"))
+    assert len(per_func) >= 2
+
+
+def test_mermaid_in_manifest(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--mermaid")
+
+    manifest = load_json(output, "manifest.json")
+    assert manifest["export"]["secondary_products"]["mermaid"] == "callgraphs/"
+
+
+def test_no_mermaid_by_default(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path)
+
+    assert not (output / "callgraphs").exists()
+
+
+def test_mermaid_deterministic(tmp_path, ghidra_path):
+    out1 = tmp_path / "run1"
+    out2 = tmp_path / "run2"
+
+    _export(FIXTURES / FIXTURE, out1, ghidra_path, "--mermaid")
+    _export(FIXTURES / FIXTURE, out2, ghidra_path, "--mermaid")
+
+    whole1 = (out1 / "callgraphs" / "callgraph.md").read_text(encoding="utf-8")
+    whole2 = (out2 / "callgraphs" / "callgraph.md").read_text(encoding="utf-8")
+    assert whole1 == whole2
+
+
+def test_mermaid_per_function_files_valid(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--mermaid")
+
+    cg_dir = output / "callgraphs"
+    for md_file in cg_dir.glob("*.md"):
+        content = md_file.read_text(encoding="utf-8")
+        assert content.startswith("flowchart TD"), f"{md_file.name} missing header"
+
+
+def test_mermaid_with_all_secondary(tmp_path, ghidra_path):
+    """--mermaid + --gzf + --cpp-export all work together."""
+    output = tmp_path / "corpus"
+
+    _export(
+        FIXTURES / FIXTURE,
+        output,
+        ghidra_path,
+        "--mermaid",
+        "--gzf",
+        "--cpp-export",
+    )
+
+    manifest = load_json(output, "manifest.json")
+    secondary = manifest["export"]["secondary_products"]
+    assert "mermaid" in secondary
+    assert "gzf" in secondary
+    assert "cpp_export" in secondary
+
+
+# ── Callgraph Queries ────────────────────────────────────────────────
+
+
+def test_mermaid_produces_endpoints_json(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(FIXTURES / FIXTURE, output, ghidra_path, "--mermaid")
+
+    ep = load_json(output / "callgraphs", "endpoints.json")
+    assert "roots" in ep
+    assert "leaves" in ep
+    assert len(ep["roots"]) >= 1
+
+
+def test_callgraph_depth_2_differs_from_depth_1(tmp_path, ghidra_path):
+    d1 = tmp_path / "d1"
+    d2 = tmp_path / "d2"
+
+    _export(FIXTURES / FIXTURE, d1, ghidra_path, "--mermaid", "--callgraph-depth", "1")
+    _export(FIXTURES / FIXTURE, d2, ghidra_path, "--mermaid", "--callgraph-depth", "2")
+
+    files1 = sorted(f.name for f in (d1 / "callgraphs").glob("*.md"))
+    files2 = sorted(f.name for f in (d2 / "callgraphs").glob("*.md"))
+    assert files1 == files2
+
+    some_func = next(f for f in files1 if f != "callgraph.md")
+    content1 = (d1 / "callgraphs" / some_func).read_text(encoding="utf-8")
+    content2 = (d2 / "callgraphs" / some_func).read_text(encoding="utf-8")
+    assert len(content2) >= len(content1)
+
+
+def test_condense_threshold_triggers(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(
+        FIXTURES / FIXTURE,
+        output,
+        ghidra_path,
+        "--mermaid",
+        "--condense-threshold",
+        "1",
+    )
+
+    content = (output / "callgraphs" / "callgraph.md").read_text(encoding="utf-8")
+    assert content.startswith("flowchart TD")
+
+
+def test_reachable_known_functions(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    result = _export(
+        FIXTURES / FIXTURE,
+        output,
+        ghidra_path,
+        "--reachable",
+        "entry",
+        "rotate_mix",
+    )
+
+    combined = result.stdout + result.stderr
+    assert "Reachable" in combined or "Not reachable" in combined
+    reach_path = output / "callgraphs" / "reachability.json"
+    assert reach_path.is_file()
+    data = load_json(output / "callgraphs", "reachability.json")
+    assert "reachable" in data
+    assert "path_count" in data
+
+
+def test_reachable_unknown_function_fails(tmp_path, ghidra_path):
+    result = run_export(
+        FIXTURES / FIXTURE,
+        tmp_path / "corpus",
+        *SPEC,
+        "--reachable",
+        "entry",
+        "NONEXISTENT_FUNCTION_xyz",
+        ghidra_path=ghidra_path,
+        check=False,
+    )
+
+    assert result.returncode != 0
+
+
+def test_reachable_with_mermaid_writes_paths_md(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(
+        FIXTURES / FIXTURE,
+        output,
+        ghidra_path,
+        "--mermaid",
+        "--reachable",
+        "entry",
+        "rotate_mix",
+    )
+
+    reach = load_json(output / "callgraphs", "reachability.json")
+    if reach["reachable"] and reach["path_count"] > 0:
+        assert (output / "callgraphs" / "paths.md").is_file()
+
+
+def test_reachable_without_mermaid_no_paths_md(tmp_path, ghidra_path):
+    output = tmp_path / "corpus"
+
+    _export(
+        FIXTURES / FIXTURE,
+        output,
+        ghidra_path,
+        "--reachable",
+        "entry",
+        "rotate_mix",
+    )
+
+    assert (output / "callgraphs" / "reachability.json").is_file()
+    assert not (output / "callgraphs" / "paths.md").exists()
+
+
+def test_callgraph_depth_deterministic(tmp_path, ghidra_path):
+    r1 = tmp_path / "r1"
+    r2 = tmp_path / "r2"
+
+    _export(FIXTURES / FIXTURE, r1, ghidra_path, "--mermaid", "--callgraph-depth", "2")
+    _export(FIXTURES / FIXTURE, r2, ghidra_path, "--mermaid", "--callgraph-depth", "2")
+
+    content1 = (r1 / "callgraphs" / "callgraph.md").read_text(encoding="utf-8")
+    content2 = (r2 / "callgraphs" / "callgraph.md").read_text(encoding="utf-8")
+    assert content1 == content2

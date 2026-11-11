@@ -12,7 +12,6 @@ Tests are organized by what they require:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -51,7 +50,7 @@ def network_available():
 
         urlopen("https://msdl.microsoft.com/download/symbols/", timeout=5)
         return True
-    except Exception:
+    except OSError:
         return False
 
 

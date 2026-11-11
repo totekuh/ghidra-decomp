@@ -6,7 +6,6 @@ from Microsoft's public symbol server, and caches them locally.
 
 from __future__ import annotations
 
-import hashlib
 import shutil
 import struct
 import subprocess

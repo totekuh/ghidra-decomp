@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
-from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -281,8 +280,8 @@ class TestFetchPdb:
         def fake_download(url):
             calls.append(url)
             if url.endswith("test.pdb"):
-                return None
-            return None  # compressed also misses
+                return
+            return  # compressed also misses
 
         monkeypatch.setattr("ghidra_decomp.pdb._download", fake_download)
         fetch_pdb(info, tmp_path)

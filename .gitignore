@@ -11,8 +11,11 @@ CLAUDE.md
 *_ghidra/
 .mypy_cache/
 .ruff_cache/
+.pytest_cache/
 .coverage
 .coverage.*
 htmlcov/
 *.so
 *.dylib
+ROADMAP.md
+HANDOFF.md

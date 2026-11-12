@@ -7,6 +7,7 @@ from ghidra_decomp.polish._parser import is_parseable
 from ghidra_decomp.polish.bool_simplify import simplify_booleans
 from ghidra_decomp.polish.compound_assign import simplify_compound_assignments
 from ghidra_decomp.polish.dead_vars import eliminate_dead_variables
+from ghidra_decomp.polish.goto_reduce import reduce_gotos
 from ghidra_decomp.polish.loop_normalize import normalize_loops
 from ghidra_decomp.polish.nested_if_flatten import flatten_nested_ifs
 from ghidra_decomp.polish.prelude import (
@@ -1158,3 +1159,124 @@ int FUN_00401d22(long *param_1,undefined8 *param_2,undefined4 param_3)
     # param_2 only has 1 slot, should be untouched
     assert "(**(code **)*param_2)" in result
     assert is_parseable(result)
+
+
+# ---------------------------------------------------------------------------
+# goto reduction (same-block forward if-goto inversion)
+# ---------------------------------------------------------------------------
+
+def test_goto_invert_block():
+    code = """\
+void f(int x, int *p) {
+  if (x != 0) goto DONE;
+  *p = 1;
+  *p = *p + 2;
+DONE:
+  return;
+}
+"""
+    result = reduce_gotos(code)
+    assert result != code
+    assert "goto DONE" not in result
+    assert "if (x == 0) {" in result
+    assert "*p = 1;" in result
+    assert "DONE:" in result  # label kept
+    assert is_parseable(result)
+
+
+def test_goto_noop_removed():
+    code = """\
+void h(int x) {
+  if (x != 0) goto DONE;
+DONE:
+  return;
+}
+"""
+    result = reduce_gotos(code)
+    assert result != code
+    assert "goto DONE" not in result
+    assert "if (" not in result  # dead if-goto removed entirely
+    assert is_parseable(result)
+
+
+def test_goto_goto_chain():
+    code = """\
+int g(int c) {
+  int r;
+  if (c != 0) goto A;
+  goto B;
+A:
+  r = 1;
+  return r;
+B:
+  r = 2;
+  return r;
+}
+"""
+    result = reduce_gotos(code)
+    assert result != code
+    assert "if (c == 0) {" in result
+    assert "goto B;" in result
+    assert is_parseable(result)
+
+
+def test_goto_preserves_backward():
+    code = """\
+void f(int x) {
+LOOP:
+  x = x - 1;
+  if (x != 0) goto LOOP;
+  return;
+}
+"""
+    result = reduce_gotos(code)
+    assert result == code  # backward goto untouched
+
+
+def test_goto_preserves_with_else():
+    code = """\
+void f(int x, int *p) {
+  if (x != 0) {
+    goto DONE;
+  } else {
+    *p = 5;
+  }
+  *p = 1;
+DONE:
+  return;
+}
+"""
+    result = reduce_gotos(code)
+    assert result == code  # if has else, not inverted
+
+
+def test_goto_preserves_nested_goto():
+    # goto and label in DIFFERENT blocks (goto nested deeper than label)
+    code = """\
+void f(int x, int y, int *p) {
+  if (x != 0) {
+    if (y != 0) goto DONE;
+  }
+  *p = 1;
+DONE:
+  return;
+}
+"""
+    result = reduce_gotos(code)
+    assert result == code  # not same-block siblings
+
+
+def test_goto_preserves_multi_statement_consequence():
+    code = """\
+void f(int x, int *p) {
+  if (x != 0) {
+    *p = 9;
+    goto DONE;
+  }
+  *p = 1;
+DONE:
+  return;
+}
+"""
+    result = reduce_gotos(code)
+    assert result == code  # consequence is not a sole goto

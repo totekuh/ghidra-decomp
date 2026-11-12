@@ -18,6 +18,7 @@ def _register_transforms() -> list[tuple[str, callable]]:
     from .bool_simplify import simplify_booleans
     from .compound_assign import simplify_compound_assignments
     from .dead_vars import eliminate_dead_variables
+    from .goto_reduce import reduce_gotos
     from .loop_normalize import normalize_loops
     from .nested_if_flatten import flatten_nested_ifs
     from .return_simplify import simplify_returns
@@ -34,6 +35,7 @@ def _register_transforms() -> list[tuple[str, callable]]:
             ("compound_assign", simplify_compound_assignments),
             ("return_simplify", simplify_returns),
             ("ternary_synthesis", synthesize_ternaries),
+            ("goto_reduce", reduce_gotos),
             ("nested_if_flatten", flatten_nested_ifs),
             ("vtable_synthesis", synthesize_vtables),
         ]

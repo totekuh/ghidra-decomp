@@ -408,6 +408,74 @@ class TestReturnSimplifyRealBinary:
         )
 
 
+class TestGotoReduceRealBinary:
+    """Decompile a real MIPS binary where Ghidra emits same-block forward
+    if-goto patterns, proving goto_reduce inverts them on genuine output.
+
+    Reuses the noodle fixture (shared with loop_normalize); its
+    target function has invertible if-goto patterns.
+    """
+
+    BINARY = "noodle"
+    LANGUAGE = "MIPS:LE:32:default"
+    COMPILER = "default"
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def goto_pair(cls, tmp_path_factory, ghidra_path):
+        binary = FIXTURES / cls.BINARY
+        if not binary.is_file():
+            pytest.skip(f"fixture {cls.BINARY} not present")
+        pol_output = tmp_path_factory.mktemp("goto_polished")
+        raw_output = tmp_path_factory.mktemp("goto_raw")
+        run_export(
+            binary,
+            pol_output,
+            "--language",
+            cls.LANGUAGE,
+            "--compiler",
+            cls.COMPILER,
+            "--timeout",
+            "60",
+            ghidra_path=ghidra_path,
+            timeout=600,
+        )
+        run_export(
+            binary,
+            raw_output,
+            "--language",
+            cls.LANGUAGE,
+            "--compiler",
+            cls.COMPILER,
+            "--timeout",
+            "60",
+            "--no-polish",
+            ghidra_path=ghidra_path,
+            timeout=600,
+        )
+        return pol_output, raw_output
+
+    def test_goto_reduce_fires(self, goto_pair):
+        """At least one function has fewer gotos in polished output than raw,
+        proving goto_reduce inverted a same-block if-goto."""
+        pol_output, raw_output = goto_pair
+        raw_records = {r["name"]: r for r in _successful_records(raw_output)}
+        pol_records = {r["name"]: r for r in _successful_records(pol_output)}
+        common = set(raw_records) & set(pol_records)
+        assert common, "no successfully decompiled functions"
+
+        reduced = []
+        for name in common:
+            raw_code = _read_pseudocode(raw_output, raw_records[name])
+            pol_code = _read_pseudocode(pol_output, pol_records[name])
+            if raw_code.count("goto ") > pol_code.count("goto "):
+                reduced.append(name)
+
+        assert reduced, (
+            "goto_reduce did not remove any goto in the real binary"
+        )
+
+
 class TestVtableSynthesisRealBinary:
     """Decompile a stripped C++ binary where Ghidra emits double-deref vtable
     dispatch, proving vtable_synthesis fires on genuine output."""

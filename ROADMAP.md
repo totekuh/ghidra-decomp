@@ -106,9 +106,16 @@ listed; earlier passes may simplify later ones.
 
 ### Extended transforms
 
-- [ ] **Goto reduction.** Apply structured control-flow recovery (Yakdan's "No More
-  Gotos" algorithm or a subset) to eliminate reducible gotos. Larger, depends on
-  dominance/post-dominance analysis on the C AST.
+- [~] **Goto reduction (same-block inversion only).** Invert the one provably safe
+  pattern: `if (cond) goto L; <S> L:` where the if-goto and label `L` are siblings
+  in the same block, goto is the sole consequence, no else, forward jump. Rewrites
+  to `if (!cond) { <S> }` keeping the label (other gotos may target it; C labels are
+  function-scoped). No code duplication, no condition mangling. Corpus analysis of
+  15,984 real gotos showed only ~1.5% match this safe pattern — the other 98%
+  (backward loop edges, multi-level nested escapes to join points) need full
+  "No More Gotos" region/dominance structuring, which re-does Ghidra decompiler work
+  and risks duplicating code or mangling conditions. Not pursued. E2e tested against
+  the noodle fixture.
 - [x] **vtable synthesis (stripped).** Detect double-deref `code **` dispatch pattern
   in stripped C++ binaries, synthesize vtable/object typedefs, rewrite as arrow
   notation: `((_vobj_param_1 *)param_1)->_vtable->vfunc_0x8(...)`. Fires when a

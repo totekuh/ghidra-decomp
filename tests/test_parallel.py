@@ -16,6 +16,20 @@ from ghidra_decomp.decompiler import (
 )
 
 
+class _FakeDecompileOptions:
+    """Stand-in for ghidra.app.decompiler.DecompileOptions."""
+
+    def __init__(self):
+        self.grabbed = None
+        self.max_payload_mb = None
+
+    def grabFromProgram(self, program):
+        self.grabbed = program
+
+    def setMaxPayloadMBytes(self, value):
+        self.max_payload_mb = value
+
+
 class FakeAddress:
     def __init__(self, value):
         self.value = value
@@ -139,6 +153,9 @@ def fake_ghidra(monkeypatch):
         def openProgram(self, program):
             self.opened = program
 
+        def setOptions(self, options):
+            self.options = options
+
         def decompileFunction(self, func, timeout, monitor):
             self.threads.add(threading.get_ident())
             self.timeouts.append(timeout)
@@ -149,6 +166,7 @@ def fake_ghidra(monkeypatch):
 
     decompiler_module = ModuleType("ghidra.app.decompiler")
     decompiler_module.DecompInterface = FakeDecompInterface
+    decompiler_module.DecompileOptions = _FakeDecompileOptions
     task_module = ModuleType("ghidra.util.task")
     task_module.ConsoleTaskMonitor = lambda: object()
     monkeypatch.setitem(sys.modules, "ghidra.app.decompiler", decompiler_module)
@@ -229,6 +247,9 @@ def test_one_failing_function_does_not_affect_the_others(monkeypatch):
         def openProgram(self, program):
             pass
 
+        def setOptions(self, options):
+            self.options = options
+
         def decompileFunction(self, func, timeout, monitor):
             if func.getEntryPoint().toString() == "0002":
                 raise RuntimeError("decompiler crashed")
@@ -239,6 +260,7 @@ def test_one_failing_function_does_not_affect_the_others(monkeypatch):
 
     decompiler_module = ModuleType("ghidra.app.decompiler")
     decompiler_module.DecompInterface = FailingInterface
+    decompiler_module.DecompileOptions = _FakeDecompileOptions
     task_module = ModuleType("ghidra.util.task")
     task_module.ConsoleTaskMonitor = lambda: object()
     monkeypatch.setitem(sys.modules, "ghidra.app.decompiler", decompiler_module)

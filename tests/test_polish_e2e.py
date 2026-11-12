@@ -331,6 +331,155 @@ class TestPolishedCorpus:
         )
 
 
+class TestReturnSimplifyRealBinary:
+    """Decompile a real MIPS shared library where Ghidra emits the
+    if (cond) { return 1; } return 0; pattern, proving return_simplify
+    fires on genuine firmware output."""
+
+    BINARY = "kazoo"
+    LANGUAGE = "MIPS:LE:32:default"
+    COMPILER = "default"
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def return_simplify_pair(cls, tmp_path_factory, ghidra_path):
+        binary = FIXTURES / cls.BINARY
+        if not binary.is_file():
+            pytest.skip(f"fixture {cls.BINARY} not present")
+        pol_output = tmp_path_factory.mktemp("retsimpl_polished")
+        raw_output = tmp_path_factory.mktemp("retsimpl_raw")
+        run_export(
+            binary,
+            pol_output,
+            "--language",
+            cls.LANGUAGE,
+            "--compiler",
+            cls.COMPILER,
+            "--timeout",
+            "60",
+            ghidra_path=ghidra_path,
+            timeout=600,
+        )
+        run_export(
+            binary,
+            raw_output,
+            "--language",
+            cls.LANGUAGE,
+            "--compiler",
+            cls.COMPILER,
+            "--timeout",
+            "60",
+            "--no-polish",
+            ghidra_path=ghidra_path,
+            timeout=600,
+        )
+        return pol_output, raw_output
+
+    def test_return_simplify_fires(self, return_simplify_pair):
+        """At least one function has 'if (...) { return 1; } return 0;' in raw
+        that becomes 'return <cond>;' in polished."""
+        pol_output, raw_output = return_simplify_pair
+        raw_records = {r["name"]: r for r in _successful_records(raw_output)}
+        pol_records = {r["name"]: r for r in _successful_records(pol_output)}
+        common = set(raw_records) & set(pol_records)
+        assert common, "no successfully decompiled functions"
+
+        simplified = []
+        for name in common:
+            raw_code = _read_pseudocode(raw_output, raw_records[name])
+            pol_code = _read_pseudocode(pol_output, pol_records[name])
+            raw_has_pattern = (
+                "return 1;" in raw_code
+                and "return 0;" in raw_code
+            )
+            pol_lost_pattern = (
+                raw_has_pattern
+                and raw_code != pol_code
+                and (
+                    raw_code.count("return 1;") > pol_code.count("return 1;")
+                    or raw_code.count("return 0;") > pol_code.count("return 0;")
+                )
+            )
+            if pol_lost_pattern:
+                simplified.append(name)
+
+        assert simplified, (
+            "return_simplify did not fire on any function in the real binary"
+        )
+
+
+class TestLoopNormalizeRealBinary:
+    """Decompile a real MIPS executable where Ghidra emits while loops with
+    init/condition/increment pattern, proving loop_normalize converts them
+    to for loops on genuine firmware output."""
+
+    BINARY = "noodle"
+    LANGUAGE = "MIPS:LE:32:default"
+    COMPILER = "default"
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def loop_normalize_pair(cls, tmp_path_factory, ghidra_path):
+        binary = FIXTURES / cls.BINARY
+        if not binary.is_file():
+            pytest.skip(f"fixture {cls.BINARY} not present")
+        pol_output = tmp_path_factory.mktemp("loopnorm_polished")
+        raw_output = tmp_path_factory.mktemp("loopnorm_raw")
+        run_export(
+            binary,
+            pol_output,
+            "--language",
+            cls.LANGUAGE,
+            "--compiler",
+            cls.COMPILER,
+            "--timeout",
+            "60",
+            ghidra_path=ghidra_path,
+            timeout=600,
+        )
+        run_export(
+            binary,
+            raw_output,
+            "--language",
+            cls.LANGUAGE,
+            "--compiler",
+            cls.COMPILER,
+            "--timeout",
+            "60",
+            "--no-polish",
+            ghidra_path=ghidra_path,
+            timeout=600,
+        )
+        return pol_output, raw_output
+
+    def test_while_to_for_fires(self, loop_normalize_pair):
+        """At least one function has a while loop in raw that becomes a for
+        loop in polished."""
+        pol_output, raw_output = loop_normalize_pair
+        raw_records = {r["name"]: r for r in _successful_records(raw_output)}
+        pol_records = {r["name"]: r for r in _successful_records(pol_output)}
+        common = set(raw_records) & set(pol_records)
+        assert common, "no successfully decompiled functions"
+
+        converted = []
+        for name in common:
+            raw_code = _read_pseudocode(raw_output, raw_records[name])
+            pol_code = _read_pseudocode(pol_output, pol_records[name])
+            if (
+                "while" in raw_code
+                and "for (" in pol_code
+                and (
+                    "for (" not in raw_code
+                    or pol_code.count("for (") > raw_code.count("for (")
+                )
+            ):
+                converted.append(name)
+
+        assert converted, (
+            "loop_normalize did not convert any while loop to for in the real binary"
+        )
+
+
 class TestRawCorpus:
     def test_sidecar_has_polished_false(self, raw_corpus):
         """With --no-polish, every function has polished=False."""

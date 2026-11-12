@@ -85,16 +85,18 @@ listed; earlier passes may simplify later ones.
 - [x] **Loop normalization.** Detect while/do-while loops with an initializer before the
   loop, a condition check, and an increment at the loop bottom, and rewrite as `for`
   loops. Also fills empty for-initializers and converts `while(1) { if(c) break; }`
-  to `while(!c)`. Unit-tested only — Ghidra already reconstructs `for` loops on
-  x86_32 at `-O0`. May fire on other architectures or optimization levels.
+  to `while(!c)`. Ghidra already reconstructs `for` loops on x86_32 at `-O0`, but
+  emits while loops on MIPS firmware (85 while-to-for conversions across the test
+  fixtures). E2e tested against `noodle` fixture.
 - [x] **Compound assignment simplification.** `x = x + 1` to `x += 1`, covers all
   arithmetic, bitwise, and shift operators. Pure syntax rewrite on assignment
   expressions where LHS matches RHS left operand. Handles pointer derefs, subscripts,
   and field accesses.
 - [x] **Return simplification.** `if (cond) { return 1; } return 0;` to `return cond;`.
   Only fires on literal 0/1 returns at function end. Negates condition for inverted
-  pattern. Unit-tested only — Ghidra emits `(uint)(x > y)` (setcc style) rather than
-  if/return patterns on x86_32.
+  pattern. Rare on x86 (Ghidra emits setcc style), but confirmed on real MIPS firmware
+  (several functions). E2e tested against
+  `kazoo` fixture.
 - [x] **Ternary synthesis.** `if (c) { x = a; } else { x = b; }` to `x = c ? a : b;`.
   Requires same variable on both branches, no side effects in RHS.
 - [x] **Nested if flattening.** `if (a) { if (b) { body } }` to `if (a && b) { body }`.

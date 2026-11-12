@@ -77,10 +77,8 @@ listed; earlier passes may simplify later ones.
 - [x] **Dead variable elimination.** Remove locals that are assigned but never read.
   Single-pass liveness on the tree-sitter AST. Simplest transform; reduces noise in
   every function.
-- [x] **Redundant cast removal.** Strip casts where the operand type already matches the
-  target type (`(int)int_var`, `(long)(long)x`, identity casts through typedefs).
-  Syntax-only pass on cast expressions. Unit-tested only — Ghidra rarely emits
-  same-type casts in practice (1 case in 150 functions on `/usr/bin/true`).
+- [~] ~~**Redundant cast removal.**~~ Removed. Ghidra rarely emits same-type casts
+  in practice (1 case in 150 functions on `/usr/bin/true`). Not worth maintaining.
 - [x] **Boolean simplification.** `x != 0` to `x`, `x == 0` to `!x` in boolean
   contexts (if/while/for conditions, logical operators). Collapse double negation
   (`!!x` to `x`, `!(a != b)` to `a == b`).

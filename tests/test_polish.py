@@ -5,7 +5,6 @@ from __future__ import annotations
 from ghidra_decomp.polish import polish
 from ghidra_decomp.polish._parser import is_parseable
 from ghidra_decomp.polish.bool_simplify import simplify_booleans
-from ghidra_decomp.polish.cast_cleanup import remove_redundant_casts
 from ghidra_decomp.polish.compound_assign import simplify_compound_assignments
 from ghidra_decomp.polish.dead_vars import eliminate_dead_variables
 from ghidra_decomp.polish.loop_normalize import normalize_loops
@@ -217,54 +216,6 @@ def test_simplifies_logical_operands():
     assert "if (a && b)" in result
 
 
-# ── Redundant cast removal ───────────────────────────────────────────
-
-
-def _cc(body: str) -> str:
-    code = P + body
-    result = remove_redundant_casts(code)
-    return strip_prelude(result)
-
-
-def test_removes_same_type_cast():
-    code = "uint f(uint x) { return (uint)x; }\n"
-    result = _cc(code)
-    assert "(uint)" not in result
-    assert "return x;" in result
-
-
-def test_removes_nested_identical_casts():
-    code = "int f(uint x) { return (int)(int)x; }\n"
-    result = _cc(code)
-    assert "(int)(int)" not in result
-    assert "return (int)x;" in result
-
-
-def test_preserves_different_type_cast():
-    code = "int f(uint x) { return (int)x; }\n"
-    result = _cc(code)
-    assert "(int)x" in result
-
-
-def test_preserves_void_pointer_null():
-    code = "void f(void) { int *p = (void *)0; }\n"
-    result = _cc(code)
-    assert "(void *)0" in result
-
-
-def test_handles_ghidra_types():
-    code = "undefined8 f(undefined8 x) { return (undefined8)x; }\n"
-    result = _cc(code)
-    assert "(undefined8)" not in result
-    assert "return x;" in result
-
-
-def test_preserves_pointer_cast():
-    code = "void f(int *p) { char *q = (char *)p; }\n"
-    result = _cc(code)
-    assert "(char *)" in result
-
-
 # ── Full pipeline ────────────────────────────────────────────────────
 
 
@@ -276,7 +227,7 @@ uint f(uint p1, uint p2) {
     dead = p1 * 3;
     result = 0;
     if (p1 != 0) {
-        result = (uint)p1;
+        result = p1;
     }
     return result;
 }
@@ -285,7 +236,6 @@ uint f(uint p1, uint p2) {
     assert flag is True
     assert "dead" not in result
     assert "if (p1)" in result
-    assert "(uint)p1" not in result
 
 
 def test_polish_skip_returns_original():
@@ -1062,16 +1012,25 @@ uint f(uint a, uint b, uint c) {
 
 def test_pipeline_includes_new_transforms():
     code = """\
-uint f(uint x, uint y) {
+uint f(uint c, uint a, uint b) {
     uint sum = 0;
-    sum = sum + x;
-    if (x > y) {
-        return 1;
+    sum = sum + a;
+    uint r;
+    if (c) {
+        r = a;
+    } else {
+        r = b;
     }
-    return 0;
+    if (c != 0) {
+        if (a != 0) {
+            sum = sum + r;
+        }
+    }
+    return sum;
 }
 """
     result, flag = polish(code)
     assert flag is True
-    assert "sum += x" in result
-    assert "return x > y;" in result or "return (x > y);" in result
+    assert "sum += a" in result
+    assert "?" in result
+    assert "c && a" in result or "(c) && (a)" in result

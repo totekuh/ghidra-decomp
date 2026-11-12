@@ -16,7 +16,6 @@ def _register_transforms() -> list[tuple[str, callable]]:
     if _TRANSFORMS:
         return _TRANSFORMS
     from .bool_simplify import simplify_booleans
-    from .cast_cleanup import remove_redundant_casts
     from .compound_assign import simplify_compound_assignments
     from .dead_vars import eliminate_dead_variables
     from .loop_normalize import normalize_loops
@@ -29,7 +28,6 @@ def _register_transforms() -> list[tuple[str, callable]]:
         [
             ("dead_vars", eliminate_dead_variables),
             ("bool_simplify", simplify_booleans),
-            ("cast_cleanup", remove_redundant_casts),
             ("loop_normalize", normalize_loops),
             ("struct_fields", synthesize_struct_fields),
             ("compound_assign", simplify_compound_assignments),

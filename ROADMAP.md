@@ -109,10 +109,15 @@ listed; earlier passes may simplify later ones.
 - [ ] **Goto reduction.** Apply structured control-flow recovery (Yakdan's "No More
   Gotos" algorithm or a subset) to eliminate reducible gotos. Larger, depends on
   dominance/post-dominance analysis on the C AST.
-- [ ] **vtable reconstruction.** Detect contiguous function-pointer arrays in
-  `.rodata`/`.data.rel.ro`, synthesize named structs, rewrite indirect calls like
-  `*(code **)(*(long *)obj + 0x18))(obj)` as `obj->vtable->method(obj)`. Needs
-  section data from the sidecar; C++ binaries only.
+- [x] **vtable synthesis (stripped).** Detect double-deref `code **` dispatch pattern
+  in stripped C++ binaries, synthesize vtable/object typedefs, rewrite as arrow
+  notation: `((_vobj_param_1 *)param_1)->_vtable->vfunc_0x8(...)`. Fires when a
+  base variable has 2+ distinct vtable offsets. E2e tested against
+  `vtable_x86_64_stripped` fixture. Array-of-objects pattern deferred.
+- [ ] **vtable naming (debug).** When DWARF symbols are present, resolve
+  `_vptr_Base[N]` to actual method names by mapping vtable entries in `.rodata`
+  to function addresses. Needs section byte data not currently exported, plus
+  cross-function analysis. Deferred.
 - [x] **Struct field synthesis.** When repeated `*(type *)(base + offset)` patterns
   appear in a function, synthesize struct typedefs and rewrite accesses as
   `((_struct_base *)base)->field_0x10`. Requires 2+ distinct offsets per base variable.

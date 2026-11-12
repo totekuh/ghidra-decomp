@@ -148,24 +148,37 @@ __attribute__((noinline, used)) u32 loop_break_test(volatile u32 *counter) {
     return val;
 }
 
-/* Compound assignment patterns — Ghidra emits x = x + expr at -O0. */
-__attribute__((noinline, used)) u32 compound_assign_test(u32 x, u32 y) {
-    u32 sum = 0;
-    sum = sum + x;
-    sum = sum + y;
-    sum = sum * 2;
-    sum = sum - 1;
-    x = x & 0xff;
-    y = y | 0x100;
-    x = x << 2;
-    return sum + x + y;
+/* Compound assignment via volatile intermediaries.
+ * Using volatile forces Ghidra to emit separate load/op/store sequences
+ * that produce x = x + expr patterns in decompiled output. */
+__attribute__((noinline, used)) u32 compound_assign_test(volatile u32 *acc, u32 x, u32 y) {
+    *acc = 0;
+    *acc = *acc + x;
+    *acc = *acc + y;
+    *acc = *acc * 2;
+    *acc = *acc - 1;
+    u32 tmp = *acc;
+    tmp = tmp & 0xff;
+    sink = tmp;
+    tmp = sink;
+    tmp = tmp | 0x100;
+    sink = tmp;
+    return *acc + sink;
 }
 
-/* Return simplification — if (cond) return 1; return 0; pattern. */
+/* Return simplification — use volatile to prevent Ghidra from folding
+ * the comparison into a setcc-style expression. The function body forces
+ * Ghidra to keep the if/return structure. */
 __attribute__((noinline, used)) u32 return_simple_test(u32 x, u32 y) {
-    if (x > y) {
+    volatile u32 vx = x;
+    volatile u32 vy = y;
+    u32 a = vx;
+    u32 b = vy;
+    if (a > b) {
+        sink = a;
         return 1;
     }
+    sink = b;
     return 0;
 }
 
@@ -180,16 +193,21 @@ __attribute__((noinline, used)) u32 ternary_test(u32 cond, u32 a, u32 b) {
     return result;
 }
 
-/* Nested if without else — should flatten to && conditions. */
+/* Nested if without else — should flatten to && conditions.
+ * Ghidra at -O0 on x86_32 already flattens simple nested ifs,
+ * so use volatile side effects to force separate branches. */
 __attribute__((noinline, used)) u32 nested_if_test(u32 x, u32 y, u32 z) {
     u32 result = 0;
     if (x > 0) {
+        sink = x;
         if (y > 0) {
             result = x + y;
         }
     }
     if (x > 0) {
+        sink = y;
         if (y > 0) {
+            sink = z;
             if (z > 0) {
                 result = result + z;
             }
@@ -210,7 +228,7 @@ __attribute__((used)) u32 entry(void) {
     u32 r6 = combined_test(r5, r1);
     u32 r7 = loop_sum_test(data, 3);
     u32 r8 = loop_break_test(&sink);
-    u32 r9 = compound_assign_test(r5, r6);
+    u32 r9 = compound_assign_test(&sink, r5, r6);
     u32 r10 = return_simple_test(r7, r8);
     u32 r11 = ternary_test(r9, r10, r1);
     u32 r12 = nested_if_test(r11, r2, r3);

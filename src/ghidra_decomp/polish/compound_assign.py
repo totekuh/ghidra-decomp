@@ -6,6 +6,17 @@ from ._parser import apply_edits, node_text, parse
 
 _COMPOUND_OPS = frozenset({"+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"})
 
+_ASSIGNABLE_TYPES = frozenset({
+    "identifier",
+    "pointer_expression",
+    "subscript_expression",
+    "field_expression",
+})
+
+
+def _is_assignable(node) -> bool:
+    return node is not None and node.type in _ASSIGNABLE_TYPES
+
 
 def _collect_compound_edits(node) -> list[tuple[int, int, str]]:
     edits = []
@@ -20,18 +31,18 @@ def _collect_compound_edits(node) -> list[tuple[int, int, str]]:
     rhs = node.child_by_field_name("right")
     if lhs is None or rhs is None:
         return edits
-    if lhs.type != "identifier":
+    if not _is_assignable(lhs):
         return edits
     if rhs.type != "binary_expression":
         return edits
 
-    var_name = node_text(lhs)
+    lhs_text = node_text(lhs)
 
     rhs_left = rhs.child_by_field_name("left")
     rhs_right = rhs.child_by_field_name("right")
     if rhs_left is None or rhs_right is None:
         return edits
-    if rhs_left.type != "identifier" or node_text(rhs_left) != var_name:
+    if node_text(rhs_left) != lhs_text:
         return edits
 
     op_node = None
@@ -44,7 +55,7 @@ def _collect_compound_edits(node) -> list[tuple[int, int, str]]:
 
     op = node_text(op_node)
     rhs_text = node_text(rhs_right)
-    replacement = f"{var_name} {op}= {rhs_text}"
+    replacement = f"{lhs_text} {op}= {rhs_text}"
     edits.append((node.start_byte, node.end_byte, replacement))
 
     return edits

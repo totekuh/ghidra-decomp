@@ -720,6 +720,39 @@ uint f(uint x, uint a, uint b) {
     assert "x += a * b" in result
 
 
+def test_compound_pointer_deref():
+    code = """\
+void f(uint *p, uint x) {
+    *p = *p + x;
+    *p = *p - 1;
+}
+"""
+    result = _ca(code)
+    assert "*p += x" in result
+    assert "*p -= 1" in result
+
+
+def test_compound_subscript():
+    code = """\
+void f(uint *arr, uint i) {
+    arr[i] = arr[i] + 1;
+}
+"""
+    result = _ca(code)
+    assert "arr[i] += 1" in result
+
+
+def test_compound_field_access():
+    code = """\
+typedef struct { uint x; } S;
+void f(S *s) {
+    s->x = s->x + 1;
+}
+"""
+    result = _ca(code)
+    assert "s->x += 1" in result
+
+
 # ── Return simplification ──────────────────────────────────────────
 
 

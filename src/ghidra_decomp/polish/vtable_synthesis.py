@@ -104,9 +104,13 @@ def _extract_base_and_offset(node) -> tuple[str | None, int]:
     if node.type == "pointer_expression":
         star = node.child(0)
         operand = node.child(1)
-        if star is not None and node_text(star) == "*" and operand is not None:
-            if operand.type == "identifier":
-                return node_text(operand), 0
+        if (
+            star is not None
+            and node_text(star) == "*"
+            and operand is not None
+            and operand.type == "identifier"
+        ):
+            return node_text(operand), 0
         return None, 0
 
     # Slot N: parenthesized_expression containing binary_expression
@@ -196,14 +200,14 @@ def synthesize_vtables(c_code: str) -> str:
             result = _extract_vtable_call(call)
             if result is None:
                 continue
-            base_var, offset, first_arg = result
+            base_var, offset, _first_arg = result
             if base_var not in vtable_calls:
                 vtable_calls[base_var] = []
             callee = call.child_by_field_name("function")
             vtable_calls[base_var].append((offset, callee.start_byte, callee.end_byte))
 
         for base_var, entries in vtable_calls.items():
-            offsets = sorted(set(e[0] for e in entries))
+            offsets = sorted({e[0] for e in entries})
             if len(offsets) < 2:
                 continue
 
@@ -211,9 +215,7 @@ def synthesize_vtables(c_code: str) -> str:
             vtable_name = f"_vtable_{safe_name}"
             obj_name = f"_vobj_{safe_name}"
 
-            fields = "; ".join(
-                f"code *vfunc_0x{off:x}" for off in offsets
-            )
+            fields = "; ".join(f"code *vfunc_0x{off:x}" for off in offsets)
             vtable_td = f"typedef struct {{ {fields}; }} {vtable_name};"
             obj_td = f"typedef struct {{ {vtable_name} *_vtable; }} {obj_name};"
             all_typedefs.append(vtable_td)

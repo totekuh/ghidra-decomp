@@ -1042,6 +1042,7 @@ uint f(uint c, uint a, uint b) {
 # vtable synthesis
 # ---------------------------------------------------------------------------
 
+
 def test_vtable_two_slots_same_base():
     code = """\
 int f(long *param_1, int x) {
@@ -1164,6 +1165,7 @@ int FUN_00401d22(long *param_1,undefined8 *param_2,undefined4 param_3)
 # ---------------------------------------------------------------------------
 # goto reduction (same-block forward if-goto inversion)
 # ---------------------------------------------------------------------------
+
 
 def test_goto_invert_block():
     code = """\

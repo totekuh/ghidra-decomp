@@ -29,6 +29,12 @@ dependencies = [
     "tree-sitter-c>=0.23",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff>=0.9",
+]
+
 [project.scripts]
 ghidra-decomp = "ghidra_decomp.cli:main"
 ghidra-decomp-query = "ghidra_decomp.cli:query"

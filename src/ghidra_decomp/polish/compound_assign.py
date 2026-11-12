@@ -6,12 +6,14 @@ from ._parser import apply_edits, node_text, parse
 
 _COMPOUND_OPS = frozenset({"+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"})
 
-_ASSIGNABLE_TYPES = frozenset({
-    "identifier",
-    "pointer_expression",
-    "subscript_expression",
-    "field_expression",
-})
+_ASSIGNABLE_TYPES = frozenset(
+    {
+        "identifier",
+        "pointer_expression",
+        "subscript_expression",
+        "field_expression",
+    }
+)
 
 
 def _is_assignable(node) -> bool:

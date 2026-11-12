@@ -192,7 +192,13 @@ class TestPolishedCorpus:
             pytest.skip("dead_var_test not found")
 
         _TYPE_PREFIXES = (
-            "u32 ", "int ", "uint ", "undefined", "u8 ", "byte ", "long ",
+            "u32 ",
+            "int ",
+            "uint ",
+            "undefined",
+            "u8 ",
+            "byte ",
+            "long ",
         )
 
         def _count_bare_decls(code):
@@ -220,7 +226,6 @@ class TestPolishedCorpus:
             f"polished dead_var_test should have fewer declarations "
             f"(raw={raw_decls}, polished={polished_decls})"
         )
-
 
     def test_compound_assignments_fired(self, polish_corpus, raw_corpus):
         """compound_assign_test: raw has *acc = *acc + x; polished has *acc += x."""
@@ -296,7 +301,10 @@ class TestPolishedCorpus:
             if (
                 "while" in raw_code
                 and "for (" in polished_code
-                and ("for (" not in raw_code or polished_code.count("for (") > raw_code.count("for ("))
+                and (
+                    "for (" not in raw_code
+                    or polished_code.count("for (") > raw_code.count("for (")
+                )
             ):
                 convertible_while = True
                 break
@@ -388,10 +396,7 @@ class TestReturnSimplifyRealBinary:
         for name in common:
             raw_code = _read_pseudocode(raw_output, raw_records[name])
             pol_code = _read_pseudocode(pol_output, pol_records[name])
-            raw_has_pattern = (
-                "return 1;" in raw_code
-                and "return 0;" in raw_code
-            )
+            raw_has_pattern = "return 1;" in raw_code and "return 0;" in raw_code
             pol_lost_pattern = (
                 raw_has_pattern
                 and raw_code != pol_code
@@ -471,9 +476,7 @@ class TestGotoReduceRealBinary:
             if raw_code.count("goto ") > pol_code.count("goto "):
                 reduced.append(name)
 
-        assert reduced, (
-            "goto_reduce did not remove any goto in the real binary"
-        )
+        assert reduced, "goto_reduce did not remove any goto in the real binary"
 
 
 class TestVtableSynthesisRealBinary:
@@ -618,9 +621,7 @@ class TestAggressiveParamId:
 
     def test_aggressive_recorded_in_manifest(self, aggressive_pair):
         _off_output, on_output = aggressive_pair
-        manifest = json.loads(
-            (on_output / "manifest.json").read_text(encoding="utf-8")
-        )
+        manifest = json.loads((on_output / "manifest.json").read_text(encoding="utf-8"))
         assert manifest.get("analysis", {}).get("aggressive") is True, (
             "manifest should record aggressive=True for an --aggressive run"
         )

@@ -79,26 +79,30 @@ listed; earlier passes may simplify later ones.
   every function.
 - [x] **Redundant cast removal.** Strip casts where the operand type already matches the
   target type (`(int)int_var`, `(long)(long)x`, identity casts through typedefs).
-  Syntax-only pass on cast expressions.
+  Syntax-only pass on cast expressions. Unit-tested only — Ghidra rarely emits
+  same-type casts in practice (1 case in 150 functions on `/usr/bin/true`).
 - [x] **Boolean simplification.** `x != 0` to `x`, `x == 0` to `!x` in boolean
   contexts (if/while/for conditions, logical operators). Collapse double negation
   (`!!x` to `x`, `!(a != b)` to `a == b`).
 - [x] **Loop normalization.** Detect while/do-while loops with an initializer before the
   loop, a condition check, and an increment at the loop bottom, and rewrite as `for`
   loops. Also fills empty for-initializers and converts `while(1) { if(c) break; }`
-  to `while(!c)`. Highest readability impact; most complex transform.
-
+  to `while(!c)`. Unit-tested only — Ghidra already reconstructs `for` loops on
+  x86_32 at `-O0`. May fire on other architectures or optimization levels.
 - [x] **Compound assignment simplification.** `x = x + 1` to `x += 1`, covers all
   arithmetic, bitwise, and shift operators. Pure syntax rewrite on assignment
-  expressions where LHS matches RHS left operand.
+  expressions where LHS matches RHS left operand. Handles pointer derefs, subscripts,
+  and field accesses.
 - [x] **Return simplification.** `if (cond) { return 1; } return 0;` to `return cond;`.
   Only fires on literal 0/1 returns at function end. Negates condition for inverted
-  pattern.
+  pattern. Unit-tested only — Ghidra emits `(uint)(x > y)` (setcc style) rather than
+  if/return patterns on x86_32.
 - [x] **Ternary synthesis.** `if (c) { x = a; } else { x = b; }` to `x = c ? a : b;`.
   Requires same variable on both branches, no side effects in RHS.
 - [x] **Nested if flattening.** `if (a) { if (b) { body } }` to `if (a && b) { body }`.
   Handles arbitrary nesting depth. Parenthesizes `||` conditions before joining
-  with `&&`.
+  with `&&`. Ghidra already flattens simple nested ifs on x86_32; fires when
+  volatile side effects force separate branches.
 
 ### Extended transforms
 

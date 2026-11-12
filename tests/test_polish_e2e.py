@@ -137,6 +137,78 @@ class TestPolishedCorpus:
                 diffs += 1
         assert diffs > 0, "polish made no changes to any function"
 
+    def test_struct_fields_in_ptr_cast_test(self, polish_corpus, raw_corpus):
+        """ptr_cast_test has pointer arithmetic that struct synthesis should rewrite."""
+        _pname, p_output = polish_corpus
+        _rname, r_output = raw_corpus
+        p_records = {r["name"]: r for r in _successful_records(p_output)}
+        r_records = {r["name"]: r for r in _successful_records(r_output)}
+        if "ptr_cast_test" not in p_records or "ptr_cast_test" not in r_records:
+            pytest.skip("ptr_cast_test not found in decompiled output")
+        raw_code = _read_pseudocode(r_output, r_records["ptr_cast_test"])
+        polished_code = _read_pseudocode(p_output, p_records["ptr_cast_test"])
+        assert "(int)obj + " in raw_code or "(long)obj + " in raw_code, (
+            "raw ptr_cast_test missing expected pointer arithmetic"
+        )
+        assert "->field_0x" in polished_code, (
+            "polished ptr_cast_test should have struct field accesses"
+        )
+        assert "_struct_obj" in polished_code, (
+            "polished ptr_cast_test should have synthesized struct typedef"
+        )
+
+    def test_bool_simplification_fired(self, polish_corpus, raw_corpus):
+        """At least one function lost a != 0 or == 0 comparison after polish."""
+        _pname, p_output = polish_corpus
+        _rname, r_output = raw_corpus
+        p_records = {r["name"]: r for r in _successful_records(p_output)}
+        r_records = {r["name"]: r for r in _successful_records(r_output)}
+        common = set(p_records) & set(r_records)
+        raw_zero_cmp = 0
+        polished_zero_cmp = 0
+        for name in common:
+            raw_code = _read_pseudocode(r_output, r_records[name])
+            polished_code = _read_pseudocode(p_output, p_records[name])
+            raw_zero_cmp += raw_code.count("!= 0") + raw_code.count("== 0")
+            polished_zero_cmp += polished_code.count("!= 0") + polished_code.count(
+                "== 0"
+            )
+        assert polished_zero_cmp < raw_zero_cmp, (
+            "polish should have removed some != 0 / == 0 comparisons"
+        )
+
+    def test_dead_vars_removed(self, polish_corpus, raw_corpus):
+        """Polished output has fewer variable declarations than raw."""
+        _pname, p_output = polish_corpus
+        _rname, r_output = raw_corpus
+        p_records = {r["name"]: r for r in _successful_records(p_output)}
+        r_records = {r["name"]: r for r in _successful_records(r_output)}
+        common = set(p_records) & set(r_records)
+        raw_decls = 0
+        polished_decls = 0
+        for name in common:
+            raw_lines = _read_pseudocode(r_output, r_records[name]).split("\n")
+            polished_lines = _read_pseudocode(p_output, p_records[name]).split("\n")
+            for line in raw_lines:
+                stripped = line.strip()
+                if (
+                    stripped.startswith(("u32 ", "int ", "uint "))
+                    and stripped.endswith(";")
+                    and "=" not in stripped
+                ):
+                    raw_decls += 1
+            for line in polished_lines:
+                stripped = line.strip()
+                if (
+                    stripped.startswith(("u32 ", "int ", "uint "))
+                    and stripped.endswith(";")
+                    and "=" not in stripped
+                ):
+                    polished_decls += 1
+        assert polished_decls < raw_decls, (
+            "polish should have removed some dead variable declarations"
+        )
+
 
 class TestRawCorpus:
     def test_sidecar_has_polished_false(self, raw_corpus):

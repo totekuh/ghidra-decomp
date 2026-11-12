@@ -13,6 +13,7 @@ from ghidra_decomp.polish.prelude import (
     inject_prelude,
     strip_prelude,
 )
+from ghidra_decomp.polish.struct_fields import synthesize_struct_fields
 
 P = GHIDRA_PRELUDE
 
@@ -493,3 +494,125 @@ uint f(uint len) {
     assert "dead" not in result
     assert "for (i = 0;" in result
     assert "if (i)" in result
+
+
+# ── Struct field synthesis ───────────────────────────────────────────
+
+
+def _sf(body: str) -> str:
+    code = P + body
+    result = synthesize_struct_fields(code)
+    return strip_prelude(result)
+
+
+def test_struct_field_basic():
+    code = """\
+u32 f(void *obj) {
+    u32 a = *(u32 *)((int)obj + 8);
+    u32 b = *(int *)((int)obj + 4);
+    u32 c = *(int *)obj;
+    return a + b + c;
+}
+"""
+    result = _sf(code)
+    assert "_struct_obj" in result
+    assert "->field_0x8" in result
+    assert "->field_0x4" in result
+    assert "->field_0x0" in result
+
+
+def test_struct_field_preserves_single_access():
+    code = """\
+u32 f(void *obj) {
+    return *(int *)((int)obj + 4);
+}
+"""
+    result = _sf(code)
+    assert "_struct_" not in result
+    assert "->field_" not in result
+
+
+def test_struct_field_write():
+    code = """\
+void f(void *obj) {
+    *(int *)((int)obj + 4) = 42;
+    *(int *)((int)obj + 8) = 99;
+}
+"""
+    result = _sf(code)
+    assert "->field_0x4 = 42" in result
+    assert "->field_0x8 = 99" in result
+
+
+def test_struct_field_skips_non_pattern():
+    code = """\
+u32 f(int *arr) {
+    return arr[2];
+}
+"""
+    result = _sf(code)
+    assert "_struct_" not in result
+
+
+def test_struct_field_multiple_bases():
+    code = """\
+u32 f(void *a, void *b) {
+    u32 x = *(int *)((int)a + 0) + *(int *)((int)a + 4);
+    u32 y = *(int *)((int)b + 0) + *(int *)((int)b + 8);
+    return x + y;
+}
+"""
+    result = _sf(code)
+    assert "_struct_a" in result
+    assert "_struct_b" in result
+    assert "((_struct_a *)a)->field_0x0" in result
+    assert "((_struct_b *)b)->field_0x8" in result
+
+
+def test_struct_field_hex_offsets():
+    code = """\
+u32 f(void *obj) {
+    u32 a = *(int *)((int)obj + 0x10);
+    u32 b = *(int *)((int)obj + 0x1c);
+    return a + b;
+}
+"""
+    result = _sf(code)
+    assert "->field_0x10" in result
+    assert "->field_0x1c" in result
+
+
+def test_struct_field_typedef_emitted():
+    code = """\
+u32 f(void *obj) {
+    u32 a = *(int *)((int)obj + 4);
+    u32 b = *(u32 *)((int)obj + 8);
+    return a + b;
+}
+"""
+    result = _sf(code)
+    assert "typedef struct {" in result
+    assert "int field_0x4;" in result
+    assert "u32 field_0x8;" in result
+    assert "} _struct_obj;" in result
+
+
+def test_pipeline_includes_struct_fields():
+    code = """\
+u32 f(void *obj) {
+    u32 dead;
+    dead = 42;
+    u32 a = *(int *)((int)obj + 4);
+    u32 b = *(u32 *)((int)obj + 8);
+    if (a != 0) {
+        return a + b;
+    }
+    return 0;
+}
+"""
+    result, flag = polish(code)
+    assert flag is True
+    assert "dead" not in result
+    assert "->field_0x4" in result
+    assert "->field_0x8" in result
+    assert "if (a)" in result

@@ -97,15 +97,14 @@ listed; earlier passes may simplify later ones.
   `.rodata`/`.data.rel.ro`, synthesize named structs, rewrite indirect calls like
   `*(code **)(*(long *)obj + 0x18))(obj)` as `obj->vtable->method(obj)`. Needs
   section data from the sidecar; C++ binaries only.
-- [ ] **Struct field synthesis.** When repeated `*(type *)(base + offset)` patterns
-  appear across functions, synthesize struct definitions and rewrite accesses as
-  `s->field_0x10`.
+- [x] **Struct field synthesis.** When repeated `*(type *)(base + offset)` patterns
+  appear in a function, synthesize struct typedefs and rewrite accesses as
+  `((_struct_base *)base)->field_0x10`. Requires 2+ distinct offsets per base variable.
 
 ### Pre-decompilation quality flags
 
-- [ ] **Decompiler timeout control.** `--decompile-timeout` to override Ghidra's default
-  per-function decompiler timeout. Complex functions get better output at the cost of
-  wall-clock time.
+- [x] **Decompiler timeout control.** Already implemented as `--timeout` (default 60s),
+  which directly controls Ghidra's per-function `decompileFunction()` timeout.
 - [ ] **Aggressive analyzer preset.** `--aggressive` enables Aggressive Instruction
   Finder, Decompiler Parameter ID, and other off-by-default analyzers before
   decompilation.

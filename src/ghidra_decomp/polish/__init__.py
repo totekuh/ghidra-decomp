@@ -19,6 +19,7 @@ def _register_transforms() -> list[tuple[str, callable]]:
     from .cast_cleanup import remove_redundant_casts
     from .dead_vars import eliminate_dead_variables
     from .loop_normalize import normalize_loops
+    from .struct_fields import synthesize_struct_fields
 
     _TRANSFORMS.extend(
         [
@@ -26,6 +27,7 @@ def _register_transforms() -> list[tuple[str, callable]]:
             ("bool_simplify", simplify_booleans),
             ("cast_cleanup", remove_redundant_casts),
             ("loop_normalize", normalize_loops),
+            ("struct_fields", synthesize_struct_fields),
         ]
     )
     return _TRANSFORMS

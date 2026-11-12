@@ -30,9 +30,14 @@ being left as prose inside the C:
 "thunk": {"name": "getenv", "address": "EXTERNAL:00000001"},
 "decompilation": {
   "status": "success",
+  "polished": true,
   "warnings": [{"kind": "warning", "text": "Subroutine does not return"}]
 }
 ```
+
+`decompilation.polished` is `true` when the readability pipeline rewrote the
+function's pseudocode and `false` under `--no-polish` or when a function fell
+back to raw output. See [polish.md](polish.md).
 
 ## Type records
 

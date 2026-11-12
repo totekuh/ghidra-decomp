@@ -53,6 +53,20 @@ ghidra-decomp ./firmware.bin -o ./firmware_decomp
 | `--callgraph-depth` | Neighborhood hops for per-function Mermaid (1–10) | 1 |
 | `--condense-threshold` | Collapse whole-graph Mermaid when edges exceed N | none |
 | `--reachable FROM TO` | Check if FROM can reach TO in the call graph | none |
+| `--no-polish` | Skip the readability post-processing pipeline; emit raw Ghidra output | polish on |
+| `--aggressive` | Enable Ghidra's off-by-default Decompiler Parameter ID analyzer for better parameter/return types (slower) | off |
+| `--max-payload-mb` | Raise Ghidra's per-function decompiler payload cap (MB) to rescue very large functions | Ghidra default (~50MB) |
+
+## Polish
+
+By default, decompiled pseudocode is run through a post-processing pipeline that
+rewrites Ghidra's output into more readable C without changing semantics —
+`while`→`for` loops, `x = x + 1`→`x += 1`, `if (c) { return 1; } return 0;`→
+`return c;`, struct-field and vtable synthesis on stripped binaries, and more.
+Pass `--no-polish` to get Ghidra's raw output instead. Each function's sidecar
+records whether it was polished.
+
+See [docs/polish.md](docs/polish.md) for the full transform list and guarantees.
 
 ## Output
 
@@ -122,6 +136,7 @@ docker compose run --rm ghidra-decomp ./firmware.bin -o /output/firmware_decomp
 ## Docs
 
 - [Output format](docs/output-format.md) — artifact contract, sidecars, types, manifest
+- [Polish](docs/polish.md) — the readability post-processing pipeline and its transforms
 - [Raw binaries](docs/raw-binaries.md) — language/compiler selection, rebasing, entry points
 - [Development](docs/development.md) — testing, CI, fixture regeneration
 

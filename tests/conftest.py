@@ -59,6 +59,26 @@ def require_ghidra() -> Path:
     return path
 
 
+@pytest.fixture(scope="module")
+def ghidra_path() -> Path:
+    return require_ghidra()
+
+
+def _load_functions_index(output: Path) -> list[dict]:
+    functions_json = output / "functions.json"
+    return json.loads(functions_json.read_text(encoding="utf-8"))
+
+
+def _read_pseudocode(output: Path, record: dict) -> str:
+    c_path = output / record["artifacts"]["pseudocode"]
+    return c_path.read_text(encoding="utf-8")
+
+
+def _successful_records(output: Path) -> list[dict]:
+    records = _load_functions_index(output)
+    return [r for r in records if r.get("decompilation", {}).get("status") == "success"]
+
+
 def run_export(
     binary: Path,
     output: Path,

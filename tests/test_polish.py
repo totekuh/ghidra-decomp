@@ -17,6 +17,7 @@ from ghidra_decomp.polish.prelude import (
 from ghidra_decomp.polish.return_simplify import simplify_returns
 from ghidra_decomp.polish.struct_fields import synthesize_struct_fields
 from ghidra_decomp.polish.ternary_synthesis import synthesize_ternaries
+from ghidra_decomp.polish.vtable_synthesis import synthesize_vtables
 
 P = GHIDRA_PRELUDE
 
@@ -1034,3 +1035,126 @@ uint f(uint c, uint a, uint b) {
     assert "sum += a" in result
     assert "?" in result
     assert "c && a" in result or "(c) && (a)" in result
+
+
+# ---------------------------------------------------------------------------
+# vtable synthesis
+# ---------------------------------------------------------------------------
+
+def test_vtable_two_slots_same_base():
+    code = """\
+int f(long *param_1, int x) {
+  int a;
+  int b;
+  a = (**(code **)*param_1)(param_1, x);
+  b = (**(code **)(*param_1 + 8))(param_1, x, x);
+  return a + b;
+}
+"""
+    result = synthesize_vtables(code)
+    assert result != code
+    assert "_vtable_param_1" in result
+    assert "_vobj_param_1" in result
+    assert "->_vtable->vfunc_0x0" in result
+    assert "->_vtable->vfunc_0x8" in result
+    assert is_parseable(result)
+
+
+def test_vtable_single_slot_no_change():
+    code = """\
+void f(long *param_1, int x) {
+  (**(code **)*param_1)(param_1, x);
+  return;
+}
+"""
+    result = synthesize_vtables(code)
+    assert result == code
+
+
+def test_vtable_two_bases():
+    code = """\
+int f(long *p1, long *p2, int x) {
+  int a;
+  int b;
+  int c;
+  int d;
+  a = (**(code **)*p1)(p1, x);
+  b = (**(code **)(*p1 + 8))(p1, x, x);
+  c = (**(code **)*p2)(p2, x);
+  d = (**(code **)(*p2 + 16))(p2, x);
+  return a + b + c + d;
+}
+"""
+    result = synthesize_vtables(code)
+    assert result != code
+    assert "_vtable_p1" in result
+    assert "_vtable_p2" in result
+    assert "vfunc_0x0" in result
+    assert "vfunc_0x8" in result
+    assert "vfunc_0x10" in result
+    assert is_parseable(result)
+
+
+def test_vtable_preserves_non_vtable_call():
+    code = """\
+int f(long *param_1, int x) {
+  int a;
+  a = some_function(param_1, x);
+  return a;
+}
+"""
+    result = synthesize_vtables(code)
+    assert result == code
+
+
+def test_vtable_preserves_direct_call():
+    code = """\
+int f(int x) {
+  return foo(x);
+}
+"""
+    result = synthesize_vtables(code)
+    assert result == code
+
+
+def test_vtable_three_slots():
+    code = """\
+int f(long *obj, int x) {
+  int a;
+  int b;
+  int c;
+  a = (**(code **)*obj)(obj, x);
+  b = (**(code **)(*obj + 8))(obj, x);
+  c = (**(code **)(*obj + 16))(obj, x);
+  return a + b + c;
+}
+"""
+    result = synthesize_vtables(code)
+    assert result != code
+    assert "vfunc_0x0" in result
+    assert "vfunc_0x8" in result
+    assert "vfunc_0x10" in result
+    assert is_parseable(result)
+
+
+def test_vtable_output_parseable():
+    code = """\
+int FUN_00401d22(long *param_1,undefined8 *param_2,undefined4 param_3)
+{
+  int iVar1;
+  int iVar2;
+  int iVar3;
+
+  iVar1 = (**(code **)*param_1)(param_1,param_3);
+  iVar2 = (**(code **)*param_2)(param_2,param_3);
+  iVar3 = (**(code **)(*param_1 + 8))(param_1,param_3,param_3);
+  return iVar3 + iVar1 + iVar2;
+}
+"""
+    result = synthesize_vtables(code)
+    assert result != code
+    assert "((_vobj_param_1 *)param_1)->_vtable->vfunc_0x0" in result
+    assert "((_vobj_param_1 *)param_1)->_vtable->vfunc_0x8" in result
+    # param_2 only has 1 slot, should be untouched
+    assert "(**(code **)*param_2)" in result
+    assert is_parseable(result)

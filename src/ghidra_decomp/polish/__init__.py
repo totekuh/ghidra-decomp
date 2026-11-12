@@ -23,6 +23,7 @@ def _register_transforms() -> list[tuple[str, callable]]:
     from .return_simplify import simplify_returns
     from .struct_fields import synthesize_struct_fields
     from .ternary_synthesis import synthesize_ternaries
+    from .vtable_synthesis import synthesize_vtables
 
     _TRANSFORMS.extend(
         [
@@ -34,6 +35,7 @@ def _register_transforms() -> list[tuple[str, callable]]:
             ("return_simplify", simplify_returns),
             ("ternary_synthesis", synthesize_ternaries),
             ("nested_if_flatten", flatten_nested_ifs),
+            ("vtable_synthesis", synthesize_vtables),
         ]
     )
     return _TRANSFORMS

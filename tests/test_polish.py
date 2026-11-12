@@ -6,14 +6,18 @@ from ghidra_decomp.polish import polish
 from ghidra_decomp.polish._parser import is_parseable
 from ghidra_decomp.polish.bool_simplify import simplify_booleans
 from ghidra_decomp.polish.cast_cleanup import remove_redundant_casts
+from ghidra_decomp.polish.compound_assign import simplify_compound_assignments
 from ghidra_decomp.polish.dead_vars import eliminate_dead_variables
 from ghidra_decomp.polish.loop_normalize import normalize_loops
+from ghidra_decomp.polish.nested_if_flatten import flatten_nested_ifs
 from ghidra_decomp.polish.prelude import (
     GHIDRA_PRELUDE,
     inject_prelude,
     strip_prelude,
 )
+from ghidra_decomp.polish.return_simplify import simplify_returns
 from ghidra_decomp.polish.struct_fields import synthesize_struct_fields
+from ghidra_decomp.polish.ternary_synthesis import synthesize_ternaries
 
 P = GHIDRA_PRELUDE
 
@@ -616,3 +620,425 @@ u32 f(void *obj) {
     assert "->field_0x4" in result
     assert "->field_0x8" in result
     assert "if (a)" in result
+
+
+# ── Compound assignment ─────────────────────────────────────────────
+
+
+def _ca(body: str) -> str:
+    code = P + body
+    result = simplify_compound_assignments(code)
+    return strip_prelude(result)
+
+
+def test_compound_add():
+    code = """\
+uint f(uint x) {
+    x = x + 1;
+    return x;
+}
+"""
+    result = _ca(code)
+    assert "x += 1" in result
+    assert "x = x + 1" not in result
+
+
+def test_compound_sub():
+    code = """\
+uint f(uint x) {
+    x = x - 1;
+    return x;
+}
+"""
+    result = _ca(code)
+    assert "x -= 1" in result
+
+
+def test_compound_mul():
+    code = """\
+uint f(uint x) {
+    x = x * 2;
+    return x;
+}
+"""
+    result = _ca(code)
+    assert "x *= 2" in result
+
+
+def test_compound_bitwise():
+    code = """\
+uint f(uint x) {
+    x = x & 0xff;
+    return x;
+}
+"""
+    result = _ca(code)
+    assert "x &= 0xff" in result
+
+
+def test_compound_shift():
+    code = """\
+uint f(uint x) {
+    x = x << 2;
+    return x;
+}
+"""
+    result = _ca(code)
+    assert "x <<= 2" in result
+
+
+def test_compound_preserves_rhs_first():
+    code = """\
+uint f(uint x, uint y) {
+    x = y + x;
+    return x;
+}
+"""
+    result = _ca(code)
+    assert "x = y + x" in result
+
+
+def test_compound_preserves_different_var():
+    code = """\
+uint f(uint x, uint y) {
+    x = y + 1;
+    return x;
+}
+"""
+    result = _ca(code)
+    assert "x = y + 1" in result
+
+
+def test_compound_nested_rhs():
+    code = """\
+uint f(uint x, uint a, uint b) {
+    x = x + a * b;
+    return x;
+}
+"""
+    result = _ca(code)
+    assert "x += a * b" in result
+
+
+# ── Return simplification ──────────────────────────────────────────
+
+
+def _rs(body: str) -> str:
+    code = P + body
+    result = simplify_returns(code)
+    return strip_prelude(result)
+
+
+def test_return_cond_true_false():
+    code = """\
+uint f(uint c) {
+    if (c) {
+        return 1;
+    }
+    return 0;
+}
+"""
+    result = _rs(code)
+    assert "return c;" in result
+    assert "if" not in result
+
+
+def test_return_cond_false_true():
+    code = """\
+uint f(uint c) {
+    if (c) {
+        return 0;
+    }
+    return 1;
+}
+"""
+    result = _rs(code)
+    assert "return !(c);" in result or "return !c;" in result
+    assert "if" not in result
+
+
+def test_return_negated_comparison():
+    code = """\
+uint f(uint x, uint y) {
+    if (x > y) {
+        return 0;
+    }
+    return 1;
+}
+"""
+    result = _rs(code)
+    assert "x <= y" in result
+    assert "if" not in result
+
+
+def test_return_preserves_non_boolean():
+    code = """\
+uint f(uint c) {
+    if (c) {
+        return 42;
+    }
+    return 0;
+}
+"""
+    result = _rs(code)
+    assert "if" in result
+    assert "return 42" in result
+
+
+def test_return_preserves_with_else():
+    code = """\
+uint f(uint c, uint x) {
+    if (c) {
+        return 1;
+    } else {
+        x = 2;
+    }
+    return 0;
+}
+"""
+    result = _rs(code)
+    assert "if" in result
+    assert "else" in result
+
+
+def test_return_preserves_complex_returns():
+    code = """\
+uint f(uint c, uint x, uint y) {
+    if (c) {
+        return x + 1;
+    }
+    return y + 2;
+}
+"""
+    result = _rs(code)
+    assert "if" in result
+    assert "return x + 1" in result
+
+
+# ── Ternary synthesis ──────────────────────────────────────────────
+
+
+def _ts(body: str) -> str:
+    code = P + body
+    result = synthesize_ternaries(code)
+    return strip_prelude(result)
+
+
+def test_ternary_basic():
+    code = """\
+uint f(uint c, uint a, uint b) {
+    uint x;
+    if (c) {
+        x = a;
+    } else {
+        x = b;
+    }
+    return x;
+}
+"""
+    result = _ts(code)
+    assert "x = c ? a : b;" in result
+    assert "if" not in result or "if" not in result.split("?")[0]
+
+
+def test_ternary_preserves_different_vars():
+    code = """\
+uint f(uint c, uint a, uint b) {
+    uint x;
+    uint y;
+    if (c) {
+        x = a;
+    } else {
+        y = b;
+    }
+    return x + y;
+}
+"""
+    result = _ts(code)
+    assert "?" not in result
+    assert "if" in result
+
+
+def test_ternary_preserves_multi_stmt():
+    code = """\
+uint f(uint c, uint a, uint b) {
+    uint x;
+    if (c) {
+        x = a;
+        x = x + 1;
+    } else {
+        x = b;
+    }
+    return x;
+}
+"""
+    result = _ts(code)
+    assert "?" not in result
+
+
+def test_ternary_complex_condition():
+    code = """\
+uint f(uint a, uint b, uint x, uint y) {
+    uint r;
+    if (a > b) {
+        r = x;
+    } else {
+        r = y;
+    }
+    return r;
+}
+"""
+    result = _ts(code)
+    assert "r = a > b ? x : y;" in result
+
+
+def test_ternary_preserves_side_effects():
+    code = """\
+uint f(uint c) {
+    uint x;
+    if (c) {
+        x = some_func();
+    } else {
+        x = 0;
+    }
+    return x;
+}
+"""
+    result = _ts(code)
+    assert "?" not in result
+
+
+def test_ternary_bare_stmts():
+    code = """\
+uint f(uint c, uint a, uint b) {
+    uint x;
+    if (c)
+        x = a;
+    else
+        x = b;
+    return x;
+}
+"""
+    result = _ts(code)
+    assert "?" in result
+    assert "x = c ? a : b;" in result
+
+
+# ── Nested if flattening ──────────────────────────────────────────
+
+
+def _nf(body: str) -> str:
+    code = P + body
+    result = flatten_nested_ifs(code)
+    return strip_prelude(result)
+
+
+def test_nested_if_basic():
+    code = """\
+uint f(uint a, uint b) {
+    uint r = 0;
+    if (a) {
+        if (b) {
+            r = a + b;
+        }
+    }
+    return r;
+}
+"""
+    result = _nf(code)
+    assert "if (a && b)" in result
+    # should not have nested if anymore
+    assert result.count("if (") == 1
+
+
+def test_nested_if_triple():
+    code = """\
+uint f(uint a, uint b, uint c) {
+    uint r = 0;
+    if (a) {
+        if (b) {
+            if (c) {
+                r = 1;
+            }
+        }
+    }
+    return r;
+}
+"""
+    result = _nf(code)
+    assert "if (a && b && c)" in result
+    assert result.count("if (") == 1
+
+
+def test_nested_if_preserves_else():
+    code = """\
+uint f(uint a, uint b) {
+    uint r = 0;
+    if (a) {
+        if (b) {
+            r = 1;
+        }
+    } else {
+        r = 2;
+    }
+    return r;
+}
+"""
+    result = _nf(code)
+    assert "else" in result
+    assert "&&" not in result
+
+
+def test_nested_if_preserves_inner_else():
+    code = """\
+uint f(uint a, uint b) {
+    uint r = 0;
+    if (a) {
+        if (b) {
+            r = 1;
+        } else {
+            r = 2;
+        }
+    }
+    return r;
+}
+"""
+    result = _nf(code)
+    assert "else" in result
+    assert "&&" not in result
+
+
+def test_nested_if_parens_or_condition():
+    code = """\
+uint f(uint a, uint b, uint c) {
+    uint r = 0;
+    if (a || b) {
+        if (c) {
+            r = 1;
+        }
+    }
+    return r;
+}
+"""
+    result = _nf(code)
+    assert "(a || b) && c" in result
+
+
+# ── Pipeline with all transforms ───────────────────────────────────
+
+
+def test_pipeline_includes_new_transforms():
+    code = """\
+uint f(uint x, uint y) {
+    uint sum = 0;
+    sum = sum + x;
+    if (x > y) {
+        return 1;
+    }
+    return 0;
+}
+"""
+    result, flag = polish(code)
+    assert flag is True
+    assert "sum += x" in result
+    assert "return x > y;" in result or "return (x > y);" in result

@@ -148,6 +148,56 @@ __attribute__((noinline, used)) u32 loop_break_test(volatile u32 *counter) {
     return val;
 }
 
+/* Compound assignment patterns — Ghidra emits x = x + expr at -O0. */
+__attribute__((noinline, used)) u32 compound_assign_test(u32 x, u32 y) {
+    u32 sum = 0;
+    sum = sum + x;
+    sum = sum + y;
+    sum = sum * 2;
+    sum = sum - 1;
+    x = x & 0xff;
+    y = y | 0x100;
+    x = x << 2;
+    return sum + x + y;
+}
+
+/* Return simplification — if (cond) return 1; return 0; pattern. */
+__attribute__((noinline, used)) u32 return_simple_test(u32 x, u32 y) {
+    if (x > y) {
+        return 1;
+    }
+    return 0;
+}
+
+/* Ternary candidate — if/else assigning same variable. */
+__attribute__((noinline, used)) u32 ternary_test(u32 cond, u32 a, u32 b) {
+    u32 result;
+    if (cond) {
+        result = a;
+    } else {
+        result = b;
+    }
+    return result;
+}
+
+/* Nested if without else — should flatten to && conditions. */
+__attribute__((noinline, used)) u32 nested_if_test(u32 x, u32 y, u32 z) {
+    u32 result = 0;
+    if (x > 0) {
+        if (y > 0) {
+            result = x + y;
+        }
+    }
+    if (x > 0) {
+        if (y > 0) {
+            if (z > 0) {
+                result = result + z;
+            }
+        }
+    }
+    return result;
+}
+
 /* Entry point. */
 __attribute__((used)) u32 entry(void) {
     u32 r1 = dead_var_test(42);
@@ -160,6 +210,10 @@ __attribute__((used)) u32 entry(void) {
     u32 r6 = combined_test(r5, r1);
     u32 r7 = loop_sum_test(data, 3);
     u32 r8 = loop_break_test(&sink);
-    sink = r6 ^ r7 ^ r8;
+    u32 r9 = compound_assign_test(r5, r6);
+    u32 r10 = return_simple_test(r7, r8);
+    u32 r11 = ternary_test(r9, r10, r1);
+    u32 r12 = nested_if_test(r11, r2, r3);
+    sink = r6 ^ r7 ^ r8 ^ r9 ^ r10 ^ r11 ^ r12;
     return sink;
 }

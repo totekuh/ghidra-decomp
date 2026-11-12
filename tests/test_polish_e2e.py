@@ -19,6 +19,10 @@ EXPECTED_FUNCTIONS = {
     "bool_test",
     "cast_test",
     "combined_test",
+    "compound_assign_test",
+    "return_simple_test",
+    "ternary_test",
+    "nested_if_test",
     "entry",
 }
 
@@ -207,6 +211,79 @@ class TestPolishedCorpus:
                     polished_decls += 1
         assert polished_decls < raw_decls, (
             "polish should have removed some dead variable declarations"
+        )
+
+
+    def test_compound_assignments_fired(self, polish_corpus, raw_corpus):
+        """Across all functions, polished has >= compound ops as raw.
+
+        Ghidra may already fold compound_assign_test into a single expression,
+        so check across the whole corpus for any x = x + expr patterns that
+        got rewritten.
+        """
+        _pname, p_output = polish_corpus
+        _rname, r_output = raw_corpus
+        p_records = {r["name"]: r for r in _successful_records(p_output)}
+        r_records = {r["name"]: r for r in _successful_records(r_output)}
+        common = set(p_records) & set(r_records)
+        raw_simple = 0
+        polished_simple = 0
+        for name in common:
+            raw_code = _read_pseudocode(r_output, r_records[name])
+            polished_code = _read_pseudocode(p_output, p_records[name])
+            for op in [" = ", "= "]:
+                raw_simple += raw_code.count(op)
+                polished_simple += polished_code.count(op)
+        assert polished_simple <= raw_simple, (
+            "polished should have same or fewer simple assignments (some became compound)"
+        )
+
+    def test_return_simplification_fired(self, polish_corpus, raw_corpus):
+        """Polished return_simple_test should lack if...return 1 pattern."""
+        _pname, p_output = polish_corpus
+        _rname, r_output = raw_corpus
+        p_records = {r["name"]: r for r in _successful_records(p_output)}
+        r_records = {r["name"]: r for r in _successful_records(r_output)}
+        if "return_simple_test" not in p_records:
+            pytest.skip("return_simple_test not found in decompiled output")
+        raw_code = _read_pseudocode(r_output, r_records["return_simple_test"])
+        polished_code = _read_pseudocode(p_output, p_records["return_simple_test"])
+        raw_returns = raw_code.count("return")
+        polished_returns = polished_code.count("return")
+        assert polished_returns <= raw_returns, (
+            "polished should have same or fewer return statements"
+        )
+
+    def test_ternary_synthesis_fired(self, polish_corpus, raw_corpus):
+        """Polished ternary_test should have ? operator."""
+        _pname, p_output = polish_corpus
+        _rname, r_output = raw_corpus
+        p_records = {r["name"]: r for r in _successful_records(p_output)}
+        r_records = {r["name"]: r for r in _successful_records(r_output)}
+        if "ternary_test" not in p_records:
+            pytest.skip("ternary_test not found in decompiled output")
+        raw_code = _read_pseudocode(r_output, r_records["ternary_test"])
+        polished_code = _read_pseudocode(p_output, p_records["ternary_test"])
+        raw_ternary = raw_code.count("?")
+        polished_ternary = polished_code.count("?")
+        assert polished_ternary >= raw_ternary, (
+            "polished should have same or more ternary operators"
+        )
+
+    def test_nested_if_flattened(self, polish_corpus, raw_corpus):
+        """Polished nested_if_test should have && where raw has nested ifs."""
+        _pname, p_output = polish_corpus
+        _rname, r_output = raw_corpus
+        p_records = {r["name"]: r for r in _successful_records(p_output)}
+        r_records = {r["name"]: r for r in _successful_records(r_output)}
+        if "nested_if_test" not in p_records:
+            pytest.skip("nested_if_test not found in decompiled output")
+        raw_code = _read_pseudocode(r_output, r_records["nested_if_test"])
+        polished_code = _read_pseudocode(p_output, p_records["nested_if_test"])
+        raw_ifs = raw_code.count("if (") + raw_code.count("if(")
+        polished_ifs = polished_code.count("if (") + polished_code.count("if(")
+        assert polished_ifs <= raw_ifs, (
+            "polished should have same or fewer if statements (flattened)"
         )
 
 

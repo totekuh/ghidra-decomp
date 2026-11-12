@@ -74,19 +74,31 @@ listed; earlier passes may simplify later ones.
 
 ### Core transforms
 
-- [ ] **Dead variable elimination.** Remove locals that are assigned but never read.
+- [x] **Dead variable elimination.** Remove locals that are assigned but never read.
   Single-pass liveness on the tree-sitter AST. Simplest transform; reduces noise in
   every function.
-- [ ] **Redundant cast removal.** Strip casts where the operand type already matches the
+- [x] **Redundant cast removal.** Strip casts where the operand type already matches the
   target type (`(int)int_var`, `(long)(long)x`, identity casts through typedefs).
   Syntax-only pass on cast expressions.
-- [ ] **Boolean simplification.** `x != 0` to `x`, `x == 0` to `!x` in boolean
+- [x] **Boolean simplification.** `x != 0` to `x`, `x == 0` to `!x` in boolean
   contexts (if/while/for conditions, logical operators). Collapse double negation
   (`!!x` to `x`, `!(a != b)` to `a == b`).
 - [x] **Loop normalization.** Detect while/do-while loops with an initializer before the
   loop, a condition check, and an increment at the loop bottom, and rewrite as `for`
   loops. Also fills empty for-initializers and converts `while(1) { if(c) break; }`
   to `while(!c)`. Highest readability impact; most complex transform.
+
+- [x] **Compound assignment simplification.** `x = x + 1` to `x += 1`, covers all
+  arithmetic, bitwise, and shift operators. Pure syntax rewrite on assignment
+  expressions where LHS matches RHS left operand.
+- [x] **Return simplification.** `if (cond) { return 1; } return 0;` to `return cond;`.
+  Only fires on literal 0/1 returns at function end. Negates condition for inverted
+  pattern.
+- [x] **Ternary synthesis.** `if (c) { x = a; } else { x = b; }` to `x = c ? a : b;`.
+  Requires same variable on both branches, no side effects in RHS.
+- [x] **Nested if flattening.** `if (a) { if (b) { body } }` to `if (a && b) { body }`.
+  Handles arbitrary nesting depth. Parenthesizes `||` conditions before joining
+  with `&&`.
 
 ### Extended transforms
 

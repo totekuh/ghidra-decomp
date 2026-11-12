@@ -1,7 +1,7 @@
 format: 1
 source: tests/fixtures/polish_test.c
 build_script: tests/fixtures/build_polish.sh
-source_sha256: dfc5f7894ef9b3d92f7b2d1ef772eb640fdccd031b1d72c0c86ebf487be85e6c
+source_sha256: b697ca2a52603e6ead4d4c9a9429eec5a6180c0994a498ac2408bdacaa0b4612
 build_script_sha256: ec1b161ea5485d8b58d7e5130517b05bd3d2d01c870e52d35a5a251bce1c5e14
 compiler: Debian clang version 21.1.8 (13)
 linker: Debian LLD 21.1.8 (compatible with GNU linkers)

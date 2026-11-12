@@ -146,15 +146,19 @@ listed; earlier passes may simplify later ones.
 Levers on the Ghidra invocation itself, beyond analyzer selection. All currently
 unset; ordered by impact.
 
-- [ ] **Apply `DecompileOptions` to the interface.** The `DecompInterface` is opened
-  bare (`decompiler.py` `_decompile_functions`, `openProgram` only), so we get
-  hardcoded interface defaults rather than the program's configured decompiler
-  settings. `opts = DecompileOptions(); opts.grabFromProgram(program);
-  decomp.setOptions(opts)` picks those up.
-- [ ] **Raise `setMaxPayloadMBytes`.** The per-function payload cap (~50MB default)
-  makes large functions fail to `STATUS_FALLBACK`. Raising it rescues them.
-  Targeted fix for a specific failure class; measure how many functions it recovers
-  before committing to a default.
+- [x] **Apply `DecompileOptions` to the interface.** Each decompile worker now builds
+  `DecompileOptions`, calls `grabFromProgram(program)`, and `setOptions` on its
+  `DecompInterface` (`decompiler.py` `_decompile_functions`), replacing the bare
+  built-in defaults with the program's configured decompiler settings. Applied
+  unconditionally; verified no regression against the existing output-sensitive
+  e2e transform tests.
+- [x] **Tunable payload cap via `--max-payload-mb`.** Exposes
+  `DecompileOptions.setMaxPayloadMBytes`. Raising the per-function payload cap
+  (~50MB default) rescues very large functions that otherwise fail to
+  `STATUS_FALLBACK`; lowering it is how the behavior is e2e-tested. Folded into the
+  run identity (distinct fingerprint + manifest field). E2e tested against
+  `vtable_x86_64_stripped`: a 1MB cap drops 20 functions to fallback that the
+  default decompiles (1233 vs 1253 successful).
 - [ ] **Analyzer trimming for speed.** `analyzeAll` runs every default analyzer; on
   a bulk corpus run some passes (certain data-reference / switch-table analyzers)
   may be droppable to cut wall-time. Needs measurement to know which are safe.

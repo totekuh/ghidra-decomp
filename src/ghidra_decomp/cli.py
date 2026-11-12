@@ -212,6 +212,15 @@ from .decompiler import (
     help="Enable off-by-default analyzers (Decompiler Parameter ID) for better "
     "parameter and return-type recovery. Slower.",
 )
+@click.option(
+    "--max-payload-mb",
+    "max_payload_mb",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Raise Ghidra's per-function decompiler payload cap (MB). Rescues very "
+    "large functions that otherwise fail to decompile. Default: Ghidra's "
+    "built-in limit (~50MB).",
+)
 def main(
     binary: Path | None,
     output: Path | None,
@@ -242,6 +251,7 @@ def main(
     reachable: tuple[str, str] | None,
     no_polish: bool,
     aggressive: bool,
+    max_payload_mb: int | None,
 ):
     """Decompile BINARY into a browsable source tree.
 
@@ -306,6 +316,7 @@ def main(
         reachable=reachable,
         polish=not no_polish,
         aggressive=aggressive,
+        max_payload_mb=max_payload_mb,
     )
 
     click.echo(f"\nDone. Output at: {output}")

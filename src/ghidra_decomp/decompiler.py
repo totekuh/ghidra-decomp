@@ -715,6 +715,7 @@ def decompile_binary(
     reachable: tuple[str, str] | None = None,
     polish: bool = True,
     aggressive: bool = False,
+    max_payload_mb: int | None = None,
 ) -> None:
     """Decompile a binary and write structured output."""
     binary = binary.resolve()
@@ -787,6 +788,7 @@ def decompile_binary(
         "data_type_archives": gdt_identity,
         "pdb": pdb_identity_data,
         "aggressive": aggressive,
+        "max_payload_mb": max_payload_mb,
     }
     # Validated before Ghidra starts: a typo in a pattern should fail in
     # milliseconds, not after a full analysis.
@@ -897,6 +899,7 @@ def decompile_binary(
                     condense_threshold=condense_threshold,
                     reachable=reachable,
                     polish=polish,
+                    max_payload_mb=max_payload_mb,
                     resume_index=resume_index,
                     resume_source=output if resume_index else None,
                 )
@@ -1242,7 +1245,12 @@ def _decompile_one(
 
 
 def _decompile_functions(
-    program, functions: list, timeout: int, workers: int
+    program,
+    functions: list,
+    timeout: int,
+    workers: int,
+    *,
+    max_payload_mb: int | None = None,
 ) -> dict[str, tuple[str, str | None, str, list[dict]]]:
     """Decompile every function, keyed by entry address.
 
@@ -1250,7 +1258,7 @@ def _decompile_functions(
     threads. Results are collected into a mapping so the caller can write them
     back in address order, keeping output independent of completion order.
     """
-    from ghidra.app.decompiler import DecompInterface
+    from ghidra.app.decompiler import DecompileOptions, DecompInterface
     from ghidra.util.task import ConsoleTaskMonitor
 
     local = threading.local()
@@ -1262,6 +1270,13 @@ def _decompile_functions(
         if existing is None:
             existing = DecompInterface()
             existing.openProgram(program)
+            # Each worker builds its own options object: a DecompInterface is
+            # thread-confined, so the options must not be shared either.
+            options = DecompileOptions()
+            options.grabFromProgram(program)
+            if max_payload_mb is not None:
+                options.setMaxPayloadMBytes(max_payload_mb)
+            existing.setOptions(options)
             local.decomp = existing
             local.monitor = ConsoleTaskMonitor()
             with opened_lock:
@@ -1320,6 +1335,7 @@ def _export_all(
     condense_threshold: int | None = None,
     reachable: tuple[str, str] | None = None,
     polish: bool = True,
+    max_payload_mb: int | None = None,
     resume_index: dict[str, dict] | None = None,
     resume_source: Path | None = None,
 ) -> None:
@@ -1367,7 +1383,9 @@ def _export_all(
         if _artifact_stem(func.getEntryPoint().toString(), func.getName())
         not in reusable
     ]
-    outcomes = _decompile_functions(program, pending, timeout, workers)
+    outcomes = _decompile_functions(
+        program, pending, timeout, workers, max_payload_mb=max_payload_mb
+    )
 
     # Writing artifacts and reading Ghidra metadata stay serial and in
     # address order, so the corpus is identical for any worker count.

@@ -86,16 +86,17 @@ listed; earlier passes may simplify later ones.
   loop, a condition check, and an increment at the loop bottom, and rewrite as `for`
   loops. Also fills empty for-initializers and converts `while(1) { if(c) break; }`
   to `while(!c)`. Ghidra already reconstructs `for` loops on x86_32 at `-O0`, but
-  emits while loops on real stripped MIPS binaries (85 while-to-for conversions
-  across the test fixtures). E2e tested against the `noodle` fixture.
+  emits while loops when a data-dependent break blocks for-folding. Unit-tested;
+  no committed real-binary e2e fixture (the prior one was removed).
 - [x] **Compound assignment simplification.** `x = x + 1` to `x += 1`, covers all
   arithmetic, bitwise, and shift operators. Pure syntax rewrite on assignment
   expressions where LHS matches RHS left operand. Handles pointer derefs, subscripts,
   and field accesses.
 - [x] **Return simplification.** `if (cond) { return 1; } return 0;` to `return cond;`.
   Only fires on literal 0/1 returns at function end. Negates condition for inverted
-  pattern. Rare on x86 (Ghidra emits setcc style), but confirmed on a real stripped
-  MIPS binary (several functions). E2e tested against the `kazoo` fixture.
+  pattern. Rare in practice: Ghidra folds the clean form to `return cond;` or a
+  setcc-style select, so the literal pattern only surfaces incidentally across
+  large real binaries. Unit-tested; no committed real-binary e2e fixture.
 - [x] **Ternary synthesis.** `if (c) { x = a; } else { x = b; }` to `x = c ? a : b;`.
   Requires same variable on both branches, no side effects in RHS.
 - [x] **Nested if flattening.** `if (a) { if (b) { body } }` to `if (a && b) { body }`.
@@ -113,8 +114,9 @@ listed; earlier passes may simplify later ones.
   15,984 real gotos showed only ~1.5% match this safe pattern — the other 98%
   (backward loop edges, multi-level nested escapes to join points) need full
   "No More Gotos" region/dominance structuring, which re-does Ghidra decompiler work
-  and risks duplicating code or mangling conditions. Not pursued. E2e tested against
-  the `noodle` fixture.
+  and risks duplicating code or mangling conditions. Not pursued. Unit-tested;
+  no committed real-binary e2e fixture (Ghidra structures the safe pattern away on
+  small reducible functions, so it only surfaces incidentally in large binaries).
 - [x] **vtable synthesis (stripped).** Detect double-deref `code **` dispatch pattern
   in stripped C++ binaries, synthesize vtable/object typedefs, rewrite as arrow
   notation: `((_vobj_param_1 *)param_1)->_vtable->vfunc_0x8(...)`. Fires when a
@@ -136,9 +138,10 @@ listed; earlier passes may simplify later ones.
   Decompiler Parameter ID analyzer before decompilation, recovering parameter and
   return types (e.g. `undefined4 *param` becomes `char **param`). Folded into the
   run identity, so an aggressive run gets a distinct fingerprint and manifest flag.
-  E2e tested against `kazoo` (202/392 functions re-typed, 58 fewer
-  `undefined` tokens). Aggressive Instruction Finder and other analyzers can be
-  added to the same flag later.
+  No committed real-binary e2e fixture (the prior one was removed); the sibling
+  --max-payload-mb lever has e2e coverage for the same manifest/fingerprint plumbing.
+  Aggressive Instruction Finder and other analyzers can be added to the same flag
+  later.
 
 ### Decompiler invocation tuning
 

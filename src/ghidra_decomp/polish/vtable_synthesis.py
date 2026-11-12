@@ -189,18 +189,18 @@ def synthesize_vtables(c_code: str) -> str:
     root = tree.root_node
 
     func_defs = [n for n in root.children if n.type == "function_definition"]
-    all_edits = []
-    all_typedefs = []
+    all_edits: list[tuple[int, int, str]] = []
+    all_typedefs: list[str] = []
 
     for func_def in func_defs:
         calls = _find_call_expressions(func_def)
-        vtable_calls: dict[str, list[tuple[int, int, str]]] = {}
+        vtable_calls: dict[str, list[tuple[int, int, int]]] = {}
 
         for call in calls:
-            result = _extract_vtable_call(call)
-            if result is None:
+            extracted = _extract_vtable_call(call)
+            if extracted is None:
                 continue
-            base_var, offset, _first_arg = result
+            base_var, offset, _first_arg = extracted
             if base_var not in vtable_calls:
                 vtable_calls[base_var] = []
             callee = call.child_by_field_name("function")

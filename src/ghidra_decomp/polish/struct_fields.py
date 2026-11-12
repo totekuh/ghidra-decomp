@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Any
 
 from ._parser import apply_edits, node_text, parse
 
@@ -38,7 +39,7 @@ def _parse_number(text: str) -> int | None:
         return None
 
 
-def _detect_field_access(node) -> tuple[str, int, str, object] | None:
+def _detect_field_access(node) -> tuple[str, int, str, Any] | None:
     """Detect *(type *)((cast)base + offset) or *(type *)base patterns.
 
     Returns (base_name, offset, field_type, pointer_expression_node) or None.
@@ -104,9 +105,9 @@ def _detect_field_access(node) -> tuple[str, int, str, object] | None:
     return None
 
 
-def _collect_field_accesses(root) -> dict[str, list[tuple[int, str, object]]]:
+def _collect_field_accesses(root) -> dict[str, list[tuple[int, str, Any]]]:
     """Walk tree, collect all field accesses grouped by base variable."""
-    accesses: dict[str, list[tuple[int, str, object]]] = defaultdict(list)
+    accesses: dict[str, list[tuple[int, str, Any]]] = defaultdict(list)
 
     stack = [root]
     while stack:

@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from ._parser import has_error, parse
 from .prelude import inject_prelude, strip_prelude
 
 logger = logging.getLogger(__name__)
 
-_TRANSFORMS: list[tuple[str, callable]] = []
+_TRANSFORMS: list[tuple[str, Callable[[str], str]]] = []
 
 
-def _register_transforms() -> list[tuple[str, callable]]:
+def _register_transforms() -> list[tuple[str, Callable[[str], str]]]:
     if _TRANSFORMS:
         return _TRANSFORMS
     from .bool_simplify import simplify_booleans

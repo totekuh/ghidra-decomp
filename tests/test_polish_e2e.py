@@ -162,60 +162,61 @@ class TestPolishedCorpus:
         )
 
     def test_bool_simplification_fired(self, polish_corpus, raw_corpus):
-        """At least one function lost a != 0 or == 0 comparison after polish."""
+        """bool_test specifically: raw has != 0 / == 0; polished removes them."""
         _pname, p_output = polish_corpus
         _rname, r_output = raw_corpus
         p_records = {r["name"]: r for r in _successful_records(p_output)}
         r_records = {r["name"]: r for r in _successful_records(r_output)}
-        common = set(p_records) & set(r_records)
-        raw_zero_cmp = 0
-        polished_zero_cmp = 0
-        for name in common:
-            raw_code = _read_pseudocode(r_output, r_records[name])
-            polished_code = _read_pseudocode(p_output, p_records[name])
-            raw_zero_cmp += raw_code.count("!= 0") + raw_code.count("== 0")
-            polished_zero_cmp += polished_code.count("!= 0") + polished_code.count(
-                "== 0"
-            )
+        if "bool_test" not in p_records or "bool_test" not in r_records:
+            pytest.skip("bool_test not found")
+        raw_code = _read_pseudocode(r_output, r_records["bool_test"])
+        polished_code = _read_pseudocode(p_output, p_records["bool_test"])
+        raw_zero_cmp = raw_code.count("!= 0") + raw_code.count("== 0")
+        polished_zero_cmp = polished_code.count("!= 0") + polished_code.count("== 0")
+        assert raw_zero_cmp >= 4, (
+            f"raw bool_test should have many != 0 / == 0 comparisons, got {raw_zero_cmp}"
+        )
         assert polished_zero_cmp < raw_zero_cmp, (
-            "polish should have removed some != 0 / == 0 comparisons"
+            f"polished bool_test should have fewer zero comparisons "
+            f"(raw={raw_zero_cmp}, polished={polished_zero_cmp})"
         )
 
     def test_dead_vars_removed(self, polish_corpus, raw_corpus):
-        """Polished output has fewer variable declarations than raw."""
+        """dead_var_test specifically: raw has 7 dead decls, polished has 0."""
         _pname, p_output = polish_corpus
         _rname, r_output = raw_corpus
         p_records = {r["name"]: r for r in _successful_records(p_output)}
         r_records = {r["name"]: r for r in _successful_records(r_output)}
-        common = set(p_records) & set(r_records)
-        raw_decls = 0
-        polished_decls = 0
-        for name in common:
-            raw_lines = _read_pseudocode(r_output, r_records[name]).split("\n")
-            polished_lines = _read_pseudocode(p_output, p_records[name]).split("\n")
-            for line in raw_lines:
+        if "dead_var_test" not in p_records or "dead_var_test" not in r_records:
+            pytest.skip("dead_var_test not found")
+
+        def _count_bare_decls(code):
+            count = 0
+            for line in code.split("\n"):
                 stripped = line.strip()
                 if (
                     stripped.startswith(("u32 ", "int ", "uint "))
                     and stripped.endswith(";")
                     and "=" not in stripped
                 ):
-                    raw_decls += 1
-            for line in polished_lines:
-                stripped = line.strip()
-                if (
-                    stripped.startswith(("u32 ", "int ", "uint "))
-                    and stripped.endswith(";")
-                    and "=" not in stripped
-                ):
-                    polished_decls += 1
+                    count += 1
+            return count
+
+        raw_code = _read_pseudocode(r_output, r_records["dead_var_test"])
+        polished_code = _read_pseudocode(p_output, p_records["dead_var_test"])
+        raw_decls = _count_bare_decls(raw_code)
+        polished_decls = _count_bare_decls(polished_code)
+        assert raw_decls >= 5, (
+            f"raw dead_var_test should have many dead declarations, got {raw_decls}"
+        )
         assert polished_decls < raw_decls, (
-            "polish should have removed some dead variable declarations"
+            f"polished dead_var_test should have fewer declarations "
+            f"(raw={raw_decls}, polished={polished_decls})"
         )
 
 
     def test_compound_assignments_fired(self, polish_corpus, raw_corpus):
-        """compound_assign_test raw has x = x + y patterns; polished has +=."""
+        """compound_assign_test: raw has *acc = *acc + x; polished has *acc += x."""
         _pname, p_output = polish_corpus
         _rname, r_output = raw_corpus
         p_records = {r["name"]: r for r in _successful_records(p_output)}
@@ -224,20 +225,25 @@ class TestPolishedCorpus:
             pytest.skip("compound_assign_test not found")
         raw_code = _read_pseudocode(r_output, r_records["compound_assign_test"])
         polished_code = _read_pseudocode(p_output, p_records["compound_assign_test"])
-        compound_ops = ["+=", "-=", "*=", "<<=", ">>="]
+        assert "*acc = *acc + " in raw_code or "*acc = *acc << " in raw_code, (
+            f"raw compound_assign_test should have *acc = *acc op patterns\n{raw_code}"
+        )
+        compound_ops = ["+=", "-=", "<<="]
         polished_compound = sum(polished_code.count(op) for op in compound_ops)
-        raw_compound = sum(raw_code.count(op) for op in compound_ops)
-        assert polished_compound > raw_compound, (
-            f"polished should have more compound ops than raw "
-            f"(polished={polished_compound}, raw={raw_compound})\n"
-            f"RAW:\n{raw_code}\nPOLISHED:\n{polished_code}"
+        assert polished_compound >= 3, (
+            f"polished should have at least 3 compound ops, got {polished_compound}\n"
+            f"{polished_code}"
+        )
+        assert "*acc = *acc + " not in polished_code, (
+            "polished should not have *acc = *acc + pattern (should be *acc +=)"
         )
 
-    def test_return_or_ternary_simplification_fired(self, polish_corpus, raw_corpus):
-        """return_simple_test polished differs from raw via some transform.
+    def test_return_simple_test_transformed(self, polish_corpus, raw_corpus):
+        """return_simple_test: raw has if/else for sink; polished has ternary.
 
-        Ghidra may emit if/return or ternary or setcc — verify at least one
-        transform (return simplify, ternary, bool, dead var) actually changed it.
+        Ghidra emits the comparison as setcc (not if/return), but the sink
+        if/else is rewritten by ternary synthesis. Also verifies dead vars
+        removed.
         """
         _pname, p_output = polish_corpus
         _rname, r_output = raw_corpus
@@ -247,42 +253,62 @@ class TestPolishedCorpus:
             pytest.skip("return_simple_test not found")
         raw_code = _read_pseudocode(r_output, r_records["return_simple_test"])
         polished_code = _read_pseudocode(p_output, p_records["return_simple_test"])
-        assert polished_code != raw_code, (
-            "polish should have changed return_simple_test output"
+        assert "if" in raw_code and "else" in raw_code, (
+            "raw return_simple_test should have if/else for sink assignment"
+        )
+        assert "?" in polished_code, (
+            "polished return_simple_test should have ternary from if/else"
         )
 
     def test_ternary_synthesis_fired(self, polish_corpus, raw_corpus):
-        """ternary_test raw has if/else; polished has ? ternary operator."""
-        _pname, p_output = polish_corpus
-        _rname, _r_output = raw_corpus
-        p_records = {r["name"]: r for r in _successful_records(p_output)}
-        if "ternary_test" not in p_records:
-            pytest.skip("ternary_test not found")
-        polished_code = _read_pseudocode(p_output, p_records["ternary_test"])
-        assert "?" in polished_code, (
-            f"polished ternary_test should contain ternary operator\n{polished_code}"
-        )
-        assert "if" not in polished_code.split("?")[0].split("\n")[-1], (
-            "ternary should replace if/else, not coexist on same line"
-        )
-
-    def test_nested_if_flattened(self, polish_corpus, raw_corpus):
-        """nested_if_test polished differs from raw (bool simplify, compound assign)."""
+        """ternary_test: raw has if/else assigning result; polished has ternary."""
         _pname, p_output = polish_corpus
         _rname, r_output = raw_corpus
         p_records = {r["name"]: r for r in _successful_records(p_output)}
         r_records = {r["name"]: r for r in _successful_records(r_output)}
-        if "nested_if_test" not in p_records:
+        if "ternary_test" not in p_records or "ternary_test" not in r_records:
+            pytest.skip("ternary_test not found")
+        raw_code = _read_pseudocode(r_output, r_records["ternary_test"])
+        polished_code = _read_pseudocode(p_output, p_records["ternary_test"])
+        assert "if" in raw_code and "else" in raw_code, (
+            "raw ternary_test should have if/else pattern"
+        )
+        assert "result =" in raw_code, (
+            "raw ternary_test should assign result in both branches"
+        )
+        assert "?" in polished_code, (
+            f"polished ternary_test should have ternary operator\n{polished_code}"
+        )
+        raw_if_count = raw_code.count("if ")
+        polished_if_count = polished_code.count("if ")
+        assert polished_if_count < raw_if_count, (
+            "polished should have fewer if statements after ternary synthesis"
+        )
+
+    def test_nested_if_transforms(self, polish_corpus, raw_corpus):
+        """nested_if_test: bool simplify removes != 0, compound assign fires += ."""
+        _pname, p_output = polish_corpus
+        _rname, r_output = raw_corpus
+        p_records = {r["name"]: r for r in _successful_records(p_output)}
+        r_records = {r["name"]: r for r in _successful_records(r_output)}
+        if "nested_if_test" not in p_records or "nested_if_test" not in r_records:
             pytest.skip("nested_if_test not found")
         raw_code = _read_pseudocode(r_output, r_records["nested_if_test"])
         polished_code = _read_pseudocode(p_output, p_records["nested_if_test"])
-        assert polished_code != raw_code, (
-            "polish should have changed nested_if_test"
-        )
         raw_neq0 = raw_code.count("!= 0")
         pol_neq0 = polished_code.count("!= 0")
+        assert raw_neq0 >= 3, (
+            f"raw nested_if_test should have multiple != 0, got {raw_neq0}"
+        )
         assert pol_neq0 < raw_neq0, (
-            "bool simplify should remove != 0 comparisons in nested_if_test"
+            f"bool simplify should remove standalone != 0 comparisons "
+            f"(raw={raw_neq0}, polished={pol_neq0})"
+        )
+        assert "result = result + z" in raw_code, (
+            "raw nested_if_test should have simple assignment for result + z"
+        )
+        assert "+=" in polished_code, (
+            "polished nested_if_test should have compound assignment"
         )
 
 

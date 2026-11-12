@@ -86,17 +86,16 @@ listed; earlier passes may simplify later ones.
   loop, a condition check, and an increment at the loop bottom, and rewrite as `for`
   loops. Also fills empty for-initializers and converts `while(1) { if(c) break; }`
   to `while(!c)`. Ghidra already reconstructs `for` loops on x86_32 at `-O0`, but
-  emits while loops on MIPS firmware (85 while-to-for conversions across the test
-  fixtures). E2e tested against `noodle` fixture.
+  emits while loops on real stripped MIPS binaries (85 while-to-for conversions
+  across the test fixtures). E2e tested against the `noodle` fixture.
 - [x] **Compound assignment simplification.** `x = x + 1` to `x += 1`, covers all
   arithmetic, bitwise, and shift operators. Pure syntax rewrite on assignment
   expressions where LHS matches RHS left operand. Handles pointer derefs, subscripts,
   and field accesses.
 - [x] **Return simplification.** `if (cond) { return 1; } return 0;` to `return cond;`.
   Only fires on literal 0/1 returns at function end. Negates condition for inverted
-  pattern. Rare on x86 (Ghidra emits setcc style), but confirmed on real MIPS firmware
-  (several functions). E2e tested against
-  `kazoo` fixture.
+  pattern. Rare on x86 (Ghidra emits setcc style), but confirmed on a real stripped
+  MIPS binary (several functions). E2e tested against the `kazoo` fixture.
 - [x] **Ternary synthesis.** `if (c) { x = a; } else { x = b; }` to `x = c ? a : b;`.
   Requires same variable on both branches, no side effects in RHS.
 - [x] **Nested if flattening.** `if (a) { if (b) { body } }` to `if (a && b) { body }`.
@@ -115,7 +114,7 @@ listed; earlier passes may simplify later ones.
   (backward loop edges, multi-level nested escapes to join points) need full
   "No More Gotos" region/dominance structuring, which re-does Ghidra decompiler work
   and risks duplicating code or mangling conditions. Not pursued. E2e tested against
-  the noodle fixture.
+  the `noodle` fixture.
 - [x] **vtable synthesis (stripped).** Detect double-deref `code **` dispatch pattern
   in stripped C++ binaries, synthesize vtable/object typedefs, rewrite as arrow
   notation: `((_vobj_param_1 *)param_1)->_vtable->vfunc_0x8(...)`. Fires when a

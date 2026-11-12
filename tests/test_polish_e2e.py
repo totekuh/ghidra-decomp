@@ -332,9 +332,9 @@ class TestPolishedCorpus:
 
 
 class TestReturnSimplifyRealBinary:
-    """Decompile a real MIPS shared library where Ghidra emits the
+    """Decompile a real stripped MIPS binary where Ghidra emits the
     if (cond) { return 1; } return 0; pattern, proving return_simplify
-    fires on genuine firmware output."""
+    fires on genuine decompiler output."""
 
     BINARY = "kazoo"
     LANGUAGE = "MIPS:LE:32:default"
@@ -412,8 +412,8 @@ class TestGotoReduceRealBinary:
     """Decompile a real MIPS binary where Ghidra emits same-block forward
     if-goto patterns, proving goto_reduce inverts them on genuine output.
 
-    Reuses the noodle fixture (shared with loop_normalize); its
-    target function has invertible if-goto patterns.
+    Reuses the shared loop_normalize fixture; one of its functions has
+    invertible if-goto patterns.
     """
 
     BINARY = "noodle"
@@ -699,7 +699,7 @@ class TestMaxPayloadLimit:
 class TestLoopNormalizeRealBinary:
     """Decompile a real MIPS executable where Ghidra emits while loops with
     init/condition/increment pattern, proving loop_normalize converts them
-    to for loops on genuine firmware output."""
+    to for loops on genuine decompiler output."""
 
     BINARY = "noodle"
     LANGUAGE = "MIPS:LE:32:default"

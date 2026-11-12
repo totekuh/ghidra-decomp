@@ -539,6 +539,93 @@ class TestVtableSynthesisRealBinary:
         )
 
 
+class TestAggressiveParamId:
+    """Decompile a real MIPS binary with and without --aggressive, proving the
+    Decompiler Parameter ID analyzer recovers better parameter/return types.
+
+    The aggressive run should type parameters that otherwise stay `undefined*`
+    (e.g. undefined4 *param -> char **param), reducing the corpus-wide count of
+    `undefined` type tokens.
+    """
+
+    BINARY = "kazoo"
+    LANGUAGE = "MIPS:LE:32:default"
+    COMPILER = "default"
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def aggressive_pair(cls, tmp_path_factory, ghidra_path):
+        binary = FIXTURES / cls.BINARY
+        if not binary.is_file():
+            pytest.skip(f"fixture {cls.BINARY} not present")
+        off_output = tmp_path_factory.mktemp("agg_off")
+        on_output = tmp_path_factory.mktemp("agg_on")
+        run_export(
+            binary,
+            off_output,
+            "--language",
+            cls.LANGUAGE,
+            "--compiler",
+            cls.COMPILER,
+            "--no-polish",
+            "--timeout",
+            "60",
+            ghidra_path=ghidra_path,
+            timeout=600,
+        )
+        run_export(
+            binary,
+            on_output,
+            "--language",
+            cls.LANGUAGE,
+            "--compiler",
+            cls.COMPILER,
+            "--no-polish",
+            "--aggressive",
+            "--timeout",
+            "60",
+            ghidra_path=ghidra_path,
+            timeout=600,
+        )
+        return off_output, on_output
+
+    def test_aggressive_recovers_types(self, aggressive_pair):
+        off_output, on_output = aggressive_pair
+        off_records = {r["name"]: r for r in _successful_records(off_output)}
+        on_records = {r["name"]: r for r in _successful_records(on_output)}
+        common = set(off_records) & set(on_records)
+        assert common, "no successfully decompiled functions"
+
+        off_undef = 0
+        on_undef = 0
+        changed = 0
+        for name in common:
+            off_code = _read_pseudocode(off_output, off_records[name])
+            on_code = _read_pseudocode(on_output, on_records[name])
+            off_undef += off_code.count("undefined")
+            on_undef += on_code.count("undefined")
+            if off_code != on_code:
+                changed += 1
+
+        assert changed > 0, (
+            "--aggressive changed no function output; Parameter ID analyzer "
+            "may not have run"
+        )
+        assert on_undef < off_undef, (
+            f"--aggressive should reduce undefined type tokens "
+            f"(off={off_undef}, on={on_undef})"
+        )
+
+    def test_aggressive_recorded_in_manifest(self, aggressive_pair):
+        _off_output, on_output = aggressive_pair
+        manifest = json.loads(
+            (on_output / "manifest.json").read_text(encoding="utf-8")
+        )
+        assert manifest.get("analysis", {}).get("aggressive") is True, (
+            "manifest should record aggressive=True for an --aggressive run"
+        )
+
+
 class TestLoopNormalizeRealBinary:
     """Decompile a real MIPS executable where Ghidra emits while loops with
     init/condition/increment pattern, proving loop_normalize converts them

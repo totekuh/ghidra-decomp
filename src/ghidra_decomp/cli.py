@@ -204,6 +204,14 @@ from .decompiler import (
     default=False,
     help="Skip post-processing that cleans up decompiled pseudocode.",
 )
+@click.option(
+    "--aggressive",
+    "aggressive",
+    is_flag=True,
+    default=False,
+    help="Enable off-by-default analyzers (Decompiler Parameter ID) for better "
+    "parameter and return-type recovery. Slower.",
+)
 def main(
     binary: Path | None,
     output: Path | None,
@@ -233,6 +241,7 @@ def main(
     condense_threshold: int | None,
     reachable: tuple[str, str] | None,
     no_polish: bool,
+    aggressive: bool,
 ):
     """Decompile BINARY into a browsable source tree.
 
@@ -296,6 +305,7 @@ def main(
         condense_threshold=condense_threshold,
         reachable=reachable,
         polish=not no_polish,
+        aggressive=aggressive,
     )
 
     click.echo(f"\nDone. Output at: {output}")

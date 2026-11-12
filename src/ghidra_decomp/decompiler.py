@@ -714,6 +714,7 @@ def decompile_binary(
     condense_threshold: int | None = None,
     reachable: tuple[str, str] | None = None,
     polish: bool = True,
+    aggressive: bool = False,
 ) -> None:
     """Decompile a binary and write structured output."""
     binary = binary.resolve()
@@ -785,6 +786,7 @@ def decompile_binary(
         "compiler": compiler,
         "data_type_archives": gdt_identity,
         "pdb": pdb_identity_data,
+        "aggressive": aggressive,
     }
     # Validated before Ghidra starts: a typo in a pattern should fail in
     # milliseconds, not after a full analysis.
@@ -870,7 +872,12 @@ def decompile_binary(
                 if pdb_resolved_path is not None:
                     _apply_pdb(program, pdb_resolved_path)
 
-                _run_analysis(program, flat_api, verbose=verbose_analysis)
+                _run_analysis(
+                    program,
+                    flat_api,
+                    verbose=verbose_analysis,
+                    aggressive=aggressive,
+                )
                 _export_all(
                     program,
                     input_identity,
@@ -1115,7 +1122,9 @@ def _run_semgrep(config: str, corpus: Path, destination: Path) -> dict:
     return {"config": config, "exit_code": result.returncode}
 
 
-def _run_analysis(program, flat_api, *, verbose: bool = False) -> None:
+def _run_analysis(
+    program, flat_api, *, verbose: bool = False, aggressive: bool = False
+) -> None:
     """Run Ghidra's auto-analysis on the program."""
     click.echo("Running auto-analysis...")
     if verbose:
@@ -1126,6 +1135,11 @@ def _run_analysis(program, flat_api, *, verbose: bool = False) -> None:
     success = False
     tid = program.startTransaction("Auto-analysis")
     try:
+        if aggressive:
+            from ghidra.program.model.listing import Program
+
+            options = program.getOptions(Program.ANALYSIS_PROPERTIES)
+            options.setBoolean("Decompiler Parameter ID", True)
         flat_api.analyzeAll(program)
         success = True
     finally:

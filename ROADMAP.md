@@ -133,9 +133,34 @@ listed; earlier passes may simplify later ones.
 
 - [x] **Decompiler timeout control.** Already implemented as `--timeout` (default 60s),
   which directly controls Ghidra's per-function `decompileFunction()` timeout.
-- [ ] **Aggressive analyzer preset.** `--aggressive` enables Aggressive Instruction
-  Finder, Decompiler Parameter ID, and other off-by-default analyzers before
-  decompilation.
+- [x] **Aggressive analyzer preset.** `--aggressive` enables the off-by-default
+  Decompiler Parameter ID analyzer before decompilation, recovering parameter and
+  return types (e.g. `undefined4 *param` becomes `char **param`). Folded into the
+  run identity, so an aggressive run gets a distinct fingerprint and manifest flag.
+  E2e tested against `kazoo` (202/392 functions re-typed, 58 fewer
+  `undefined` tokens). Aggressive Instruction Finder and other analyzers can be
+  added to the same flag later.
+
+### Decompiler invocation tuning
+
+Levers on the Ghidra invocation itself, beyond analyzer selection. All currently
+unset; ordered by impact.
+
+- [ ] **Apply `DecompileOptions` to the interface.** The `DecompInterface` is opened
+  bare (`decompiler.py` `_decompile_functions`, `openProgram` only), so we get
+  hardcoded interface defaults rather than the program's configured decompiler
+  settings. `opts = DecompileOptions(); opts.grabFromProgram(program);
+  decomp.setOptions(opts)` picks those up.
+- [ ] **Raise `setMaxPayloadMBytes`.** The per-function payload cap (~50MB default)
+  makes large functions fail to `STATUS_FALLBACK`. Raising it rescues them.
+  Targeted fix for a specific failure class; measure how many functions it recovers
+  before committing to a default.
+- [ ] **Analyzer trimming for speed.** `analyzeAll` runs every default analyzer; on
+  a bulk corpus run some passes (certain data-reference / switch-table analyzers)
+  may be droppable to cut wall-time. Needs measurement to know which are safe.
+- [ ] **Simplification style.** `setSimplificationStyle("decompile")` is the implicit
+  full pipeline (what we want for readable C); lighter styles (`normalize`,
+  `firstpass`) trade quality for speed. Only worth it if speed ever dominates.
 
 ### LLM-assisted enrichment (optional, not on by default)
 

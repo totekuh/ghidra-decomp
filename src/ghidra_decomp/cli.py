@@ -332,6 +332,13 @@ def _load_callgraph(output_dir: Path) -> dict:
     return json.loads(cg_path.read_text(encoding="utf-8"))
 
 
+def _resolve_or_fail(callgraph: dict, identifier: str) -> str:
+    try:
+        return _resolve_function(callgraph, identifier)
+    except ValueError as error:
+        raise click.ClickException(str(error)) from error
+
+
 @click.group()
 def query():
     """Query a previously exported callgraph (no Ghidra needed)."""
@@ -346,8 +353,8 @@ def query():
 def query_reachable(output_dir: Path, source: str, dest: str):
     """Check if SOURCE can reach DEST in the call graph."""
     callgraph = _load_callgraph(output_dir)
-    src = _resolve_function(callgraph, source)
-    dst = _resolve_function(callgraph, dest)
+    src = _resolve_or_fail(callgraph, source)
+    dst = _resolve_or_fail(callgraph, dest)
     reached = _is_reachable(callgraph, src, dst)
     paths = _find_all_paths(callgraph, src, dst) if reached else []
     if reached:
@@ -393,8 +400,8 @@ def query_endpoints(output_dir: Path):
 def query_paths(output_dir: Path, source: str, dest: str, max_depth: int):
     """Find all paths from SOURCE to DEST in the call graph."""
     callgraph = _load_callgraph(output_dir)
-    src = _resolve_function(callgraph, source)
-    dst = _resolve_function(callgraph, dest)
+    src = _resolve_or_fail(callgraph, source)
+    dst = _resolve_or_fail(callgraph, dest)
     paths = _find_all_paths(callgraph, src, dst, max_depth=max_depth)
     click.echo(
         f"{len(paths)} path(s) from {callgraph[src]['name']}"

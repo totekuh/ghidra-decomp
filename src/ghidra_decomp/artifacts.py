@@ -18,14 +18,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 CORPUS_OWNER = "ghidra-decomp"
 
 # Ownership and reuse are different questions. Ownership answers "did this tool
 # write the directory, so may it be replaced"; reuse answers "is the corpus
 # current enough to skip work". Older schemas stay replaceable so a version bump
 # never strands a corpus this tool produced.
-OWNED_SCHEMA_VERSIONS = frozenset({2, 3, 4, 5, SCHEMA_VERSION})
+OWNED_SCHEMA_VERSIONS = frozenset({2, 3, 4, 5, 6, SCHEMA_VERSION})
 
 
 @dataclass(frozen=True)

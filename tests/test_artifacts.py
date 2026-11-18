@@ -373,6 +373,27 @@ def test_combined_option_is_forwarded(tmp_path, monkeypatch, argument, expected)
     assert received == [expected]
 
 
+@pytest.mark.parametrize(("argument", "expected"), [(None, False), ("--pcode", True)])
+def test_pcode_option_is_forwarded(tmp_path, monkeypatch, argument, expected):
+    binary = tmp_path / "input.bin"
+    binary.write_bytes(b"input")
+    monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
+    received = []
+
+    def fake_decompile_binary(*args, **kwargs):
+        received.append(kwargs["pcode"])
+
+    monkeypatch.setattr("ghidra_decomp.cli.decompile_binary", fake_decompile_binary)
+    arguments = [str(binary)]
+    if argument is not None:
+        arguments.append(argument)
+
+    result = CliRunner().invoke(main, arguments)
+
+    assert result.exit_code == 0
+    assert received == [expected]
+
+
 def _staged(output, suffix):
     staging = output.parent / f"{staging_prefix(output)}{suffix}"
     staging.mkdir()

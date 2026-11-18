@@ -39,6 +39,64 @@ being left as prose inside the C:
 function's pseudocode and `false` under `--no-polish` or when a function fell
 back to raw output. See [polish.md](polish.md).
 
+## Pcode export (`--pcode`)
+
+With `--pcode`, each function also gets a `<stem>.pcode.json` sidecar, registered
+in the function record's `artifacts` map as `pcode`/`pcode_sha256` next to
+`pseudocode` and `assembly`. It is large and off by default; it exists so a
+data-flow consumer gets Ghidra's recovered facts directly instead of
+re-deriving them from the C text or disassembly. The export emits facts only —
+no sink list, no slicing, no bug judgement.
+
+Everything is sourced from the decompiler's **high** function
+(`HighFunction.getPcodeOps()`), so varnodes are recovered variables and constants
+are folded. One envelope per function:
+
+```json
+{
+  "schema_version": 7,
+  "function": "RTMPDeFragmentDataFrame",
+  "entry": "00087514",
+  "body_ranges": [{"start": "00087514", "end": "000878ff"}],
+  "arch": "MIPS:LE:32:default",
+  "ops": [ ... ], "varnodes": [ ... ], "blocks": [ ... ],
+  "calls": [ ... ], "locals": [ ... ], "rodata": [ ... ]
+}
+```
+
+- **`ops`** — every SSA pcode op in program order. Each has a stable integer
+  `seq`, the instruction `addr`, the exact Ghidra opcode `op`, an `output`
+  varnode (or `null`), and `inputs` in exact operand order. Def-use is implicit:
+  an op's `output.vn` id reappears as some later op's `input.vn`. Signedness is
+  **not** on the varnode — it is carried by the opcode (`INT_LESS` vs
+  `INT_SLESS`, `INT_ZEXT` vs `INT_SEXT`), so the opcode is kept verbatim.
+- **Varnode shape** — a non-constant varnode is `{"vn", "size", "space"}` with a
+  within-function stable `vn` id (`v0`, `v1`, …); `space` is
+  register/unique/stack/ram/const. A ram varnode also carries its `addr`. A
+  constant is inlined as `{"const": <int>, "size": <bytes>}` and has no id.
+- **`varnodes`** — one entry per varnode that resolves to a recovered variable:
+  its `highvar` name, `type`, `size`, and `storage` (storage comes from the
+  variable's symbol; an unnamed temporary falls back to its architectural
+  register). Array types also carry `{"elem_size", "count"}`.
+- **`blocks`** — the pcode basic-block CFG (not the instruction CFG). Each block
+  has its index, `start`/`end`, the `seq` indices of its `ops`, and `succ`/`pred`
+  block indices. Loop back-edges are detected by DFS and reported both as a raw
+  `back_edges` edge list on the source block and a `loop_header` flag on the
+  target.
+- **`calls`** — each `CALL`/`CALLIND` with its resolved `callee`/`callee_addr`
+  (null when indirect or unresolved) and positional `args`. The arguments are the
+  op's inputs after input[0] (the call target), i.e. Ghidra's own parameter
+  analysis — no per-architecture calling-convention recovery downstream.
+- **`locals`** — stack-resident variables with base `stack_offset`, byte `size`,
+  and array `{"elem_size", "count"}`: stack-buffer capacity, the alloc side for
+  stack overflows. Empty when a function keeps no buffers on the stack.
+- **`rodata`** — ram operands resolved from provably read-only memory as
+  `{"addr", "size", "value"}`. Writable globals are never resolved.
+
+A function with no high function (a thunk, or a decompiler error) is skipped;
+when a record is written for it, it carries `{"function", "error"}` instead of
+the envelope, mirroring `decompilation.status`.
+
 ## Type records
 
 Every type record says where it came from, how it is laid out, and who uses it, so a
@@ -79,7 +137,7 @@ and sets `usage_truncated` when it is cut, so a bounded list never reads as a sm
 
 ## Filenames
 
-Schema 6 artifact filenames include a stable digest and bounded ASCII components so
+Schema 7 artifact filenames include a stable digest and bounded ASCII components so
 segmented addresses, long symbols, and platform-reserved names remain safe. Consumers
 must follow the artifact paths in `functions.json` rather than constructing filenames.
 

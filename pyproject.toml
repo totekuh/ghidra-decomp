@@ -19,12 +19,13 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Security",
     "Topic :: Software Development :: Disassemblers",
 ]
 dependencies = [
     "pyghidra>=3.0",
-    "click",
+    "click>=8",
     "tree-sitter>=0.23",
     "tree-sitter-c>=0.23",
 ]
@@ -33,6 +34,7 @@ dependencies = [
 dev = [
     "pytest",
     "ruff>=0.9",
+    "mypy",
 ]
 
 [project.scripts]

@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,9 @@ from pathlib import Path
 import pytest
 
 FIXTURES = Path(__file__).parent / "fixtures"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+CROSSBUILD_DOCKERFILE = "tests/fixtures/Dockerfile.crossbuild"
+CROSSBUILD_TAG = "ghidra-decomp-crossbuild:test"
 
 
 def sha256_of(path: Path) -> str:
@@ -127,3 +131,62 @@ def assert_artifact_hashes(output: Path, record: dict) -> None:
         path = output / record["artifacts"][path_key]
         assert path.is_file()
         assert sha256_of(path) == record["artifacts"][hash_key]
+
+
+def require_docker() -> None:
+    """Skip when Docker cannot be used to cross-compile fixtures.
+
+    A fixture family compiled in-test needs a working Docker daemon; its absence
+    is a skip, not a failure, so the rest of the suite still runs on a host
+    without it.
+    """
+    if shutil.which("docker") is None:
+        pytest.skip("docker is not installed")
+    probe = subprocess.run(
+        ["docker", "info"], capture_output=True, text=True, check=False
+    )
+    if probe.returncode != 0:
+        pytest.skip("docker is installed but not usable")
+
+
+def build_crossbuild_fixtures(dest: Path, names: list[str]) -> Path:
+    """Compile named fixtures fresh from source via the crossbuild image.
+
+    The image build is the compile step. Its COPY layers are keyed on the
+    fixture sources, so editing a fixture's `.c` invalidates the cache and the
+    binary is rebuilt — the test always decompiles what the current source
+    produces, never a stale committed blob. Built binaries are extracted to
+    `dest`, outside the image, for the test to consume.
+    """
+    build = subprocess.run(
+        ["docker", "build", "-f", CROSSBUILD_DOCKERFILE, "-t", CROSSBUILD_TAG, "."],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert build.returncode == 0, f"crossbuild image failed:\n{build.stderr}"
+
+    created = subprocess.run(
+        ["docker", "create", CROSSBUILD_TAG],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, f"docker create failed:\n{created.stderr}"
+    container = created.stdout.strip()
+    try:
+        for name in names:
+            copied = subprocess.run(
+                ["docker", "cp", f"{container}:/fixtures/{name}", str(dest / name)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert copied.returncode == 0, f"docker cp {name} failed:\n{copied.stderr}"
+    finally:
+        subprocess.run(
+            ["docker", "rm", container], capture_output=True, text=True, check=False
+        )
+    return dest

@@ -34,3 +34,15 @@ done
 
 `multiarch.provenance` records source and script hashes, tool versions, complete common
 flags, per-output target and linker emulation, and architecture-specific flags.
+
+## Pcode fixtures
+
+`pcode_test.c` is the source for the `--pcode` export e2e test
+(`tests/test_pcode_e2e.py`). Unlike the multiarch and polish families, its binaries are
+**not committed**: the test cross-compiles them fresh from source on every run via
+`Dockerfile.crossbuild` (`build_pcode.sh` inside the `clang-21`/`ld.lld-21` image), so a
+change to `pcode_test.c` is always picked up rather than depending on a stale checked-in
+blob. The image's COPY layer is keyed on the source, so an unchanged source is a cache
+hit and only the first build pays the toolchain-install cost. The test is skipped when
+Docker is unavailable. `build_pcode.sh` can still be run directly to produce the binaries
+locally, but those outputs are intentionally left untracked.

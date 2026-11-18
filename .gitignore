@@ -19,3 +19,14 @@ htmlcov/
 *.dylib
 ROADMAP.md
 HANDOFF.md
+
+# Pcode fixtures are compiled fresh in-test via Docker, never committed
+# (see tests/fixtures/README.md). Ignore any locally-built outputs.
+tests/fixtures/pcode_x86_32
+tests/fixtures/pcode_armv7
+tests/fixtures/pcode_aarch64
+tests/fixtures/pcode_mipsel
+tests/fixtures/pcode_ppc32
+tests/fixtures/pcode_riscv64
+tests/fixtures/pcode.sha256
+tests/fixtures/pcode.provenance

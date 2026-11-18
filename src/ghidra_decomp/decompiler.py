@@ -32,6 +32,7 @@ from .artifacts import (
     staging_prefix,
     validate_destination,
 )
+from .pcode import serialize_high_function
 
 PROJECT_NAME = "project"
 
@@ -463,11 +464,16 @@ def _artifact_hashes_match(previous: Path, record: dict) -> bool:
     artifacts = record.get("artifacts")
     if not isinstance(artifacts, dict):
         return False
-    for path_key, hash_key in (
+    checks = [
         ("pseudocode", "pseudocode_sha256"),
         ("assembly", "assembly_sha256"),
         ("sidecar", "sidecar_sha256"),
-    ):
+    ]
+    # The pcode sidecar is optional: only corpora built with --pcode carry it, so
+    # it is verified when declared rather than demanded of every record.
+    if isinstance(artifacts.get("pcode"), str):
+        checks.append(("pcode", "pcode_sha256"))
+    for path_key, hash_key in checks:
         relative = artifacts.get(path_key)
         expected = artifacts.get(hash_key)
         if not isinstance(relative, str) or not isinstance(expected, str):
@@ -691,6 +697,7 @@ def decompile_binary(
     *,
     timeout: int = 60,
     combined: bool = False,
+    pcode: bool = False,
     ghidra_path: Path | None = None,
     base_addr: str | None = None,
     language: str | None = None,
@@ -886,6 +893,7 @@ def decompile_binary(
                     staging,
                     timeout,
                     combined=combined,
+                    pcode=pcode,
                     requested_analysis=requested_analysis,
                     request_fingerprint=request_fingerprint,
                     pyghidra_version=pyghidra_version,
@@ -1213,27 +1221,35 @@ def default_workers() -> int:
 
 
 def _decompile_one(
-    decomp, monitor, func, timeout: int
-) -> tuple[str, str | None, str, list[dict]]:
-    """Decompile one function: outcome, error, C output, and its locals.
+    decomp, monitor, func, timeout: int, program=None, pcode: bool = False
+) -> tuple[str, str | None, str, list[dict], dict | None]:
+    """Decompile one function: outcome, error, C output, locals, and pcode.
 
-    Locals are converted to plain dicts here rather than returned as Ghidra
-    objects, because the decompilation result belongs to the worker that
-    produced it and must not outlive this call.
+    Locals and pcode are converted to plain dicts here rather than returned as
+    Ghidra objects, because the decompilation result belongs to the worker that
+    produced it and must not outlive this call. The pcode payload is ``None``
+    unless ``--pcode`` is active and a high function was recovered.
     """
     try:
         result = decomp.decompileFunction(func, timeout, monitor)
     except Exception as e:  # noqa: BLE001 - isolate function failures
-        return STATUS_FAILED, f"exception: {e}", "", []
+        return STATUS_FAILED, f"exception: {e}", "", [], None
 
     locals_ = _high_function_locals(result)
+    pcode_payload = _serialize_pcode(result, func, program) if pcode else None
 
     if result and result.decompileCompleted():
         decomp_func = result.getDecompiledFunction()
         c_code = decomp_func.getC() if decomp_func else None
         if c_code:
-            return STATUS_SUCCESS, None, str(c_code), locals_
-        return STATUS_FALLBACK, "decompiler returned no C output", "", locals_
+            return STATUS_SUCCESS, None, str(c_code), locals_, pcode_payload
+        return (
+            STATUS_FALLBACK,
+            "decompiler returned no C output",
+            "",
+            locals_,
+            pcode_payload,
+        )
 
     error = (
         result.getErrorMessage() if result is not None else None
@@ -1241,7 +1257,28 @@ def _decompile_one(
     # A decompiler that ran out of time did not decline the function; it is
     # retryable and must not be reported as a settled fallback.
     status = STATUS_FAILED if _is_timeout_error(error) else STATUS_FALLBACK
-    return status, str(error), "", locals_
+    return status, str(error), "", locals_, pcode_payload
+
+
+def _serialize_pcode(result, func, program) -> dict | None:
+    """Serialize high pcode from a decompilation result, isolating any failure.
+
+    Runs in the worker where the high function is alive. A serialization failure
+    for one function degrades to ``None`` rather than aborting the export, the
+    same way ``_high_function_locals`` returns ``[]`` when no model is available.
+    """
+    if result is None or program is None:
+        return None
+    try:
+        high_function = result.getHighFunction()
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        return serialize_high_function(
+            high_function, func, program, schema_version=SCHEMA_VERSION
+        )
+    except Exception as e:  # noqa: BLE001 - one function must not sink the run
+        return {"function": func.getName(), "error": f"pcode serialization failed: {e}"}
 
 
 def _decompile_functions(
@@ -1251,7 +1288,8 @@ def _decompile_functions(
     workers: int,
     *,
     max_payload_mb: int | None = None,
-) -> dict[str, tuple[str, str | None, str, list[dict]]]:
+    pcode: bool = False,
+) -> dict[str, tuple[str, str | None, str, list[dict], dict | None]]:
     """Decompile every function, keyed by entry address.
 
     Each worker owns one `DecompInterface`; an interface is never shared across
@@ -1287,10 +1325,10 @@ def _decompile_functions(
         decomp, monitor = interface()
         return (
             func.getEntryPoint().toString(),
-            _decompile_one(decomp, monitor, func, timeout),
+            _decompile_one(decomp, monitor, func, timeout, program, pcode),
         )
 
-    results: dict[str, tuple[str, str | None, str, list[dict]]] = {}
+    results: dict[str, tuple[str, str | None, str, list[dict], dict | None]] = {}
     try:
         if workers <= 1:
             with click.progressbar(
@@ -1322,6 +1360,7 @@ def _export_all(
     timeout: int,
     *,
     combined: bool = False,
+    pcode: bool = False,
     requested_analysis: dict,
     request_fingerprint: dict,
     pyghidra_version: str,
@@ -1372,6 +1411,14 @@ def _export_all(
 
     click.echo(f"Functions: {total}")
     reusable = resume_index or {}
+    if pcode and reusable:
+        # A pcode run cannot reuse a function the previous corpus exported without
+        # pcode; those are re-decompiled so the new sidecar actually gets written.
+        reusable = {
+            stem: record
+            for stem, record in reusable.items()
+            if isinstance(record.get("artifacts", {}).get("pcode"), str)
+        }
     if reusable:
         click.echo(f"Reusable functions from the previous corpus: {len(reusable)}")
     records: list[dict] = []
@@ -1384,7 +1431,7 @@ def _export_all(
         not in reusable
     ]
     outcomes = _decompile_functions(
-        program, pending, timeout, workers, max_payload_mb=max_payload_mb
+        program, pending, timeout, workers, max_payload_mb=max_payload_mb, pcode=pcode
     )
 
     # Writing artifacts and reading Ghidra metadata stay serial and in
@@ -1395,6 +1442,7 @@ def _export_all(
         stem = _artifact_stem(addr, name)
         c_path = func_dir / f"{stem}.c"
         assembly_path = assembly_dir / f"{stem}.s"
+        pcode_path = func_dir / f"{stem}.pcode.json"
 
         reused = reusable.get(stem)
         if reused is not None and resume_source is not None:
@@ -1402,6 +1450,9 @@ def _export_all(
             shutil.copyfile(
                 resume_source / reused["artifacts"]["assembly"], assembly_path
             )
+            reused_pcode = reused["artifacts"].get("pcode")
+            if reused_pcode is not None:
+                shutil.copyfile(resume_source / reused_pcode, pcode_path)
             record = dict(reused)
             record["decompilation"] = {
                 **record["decompilation"],
@@ -1421,6 +1472,7 @@ def _export_all(
         status: str
         error: str | None
         decompiled_locals: list[dict] = []
+        pcode_payload: dict | None = None
         notes: list[dict] = []
         polished = False
         if not assembly:
@@ -1430,7 +1482,7 @@ def _export_all(
             error = "function contains no instructions"
             content = header + _failure_comment(error)
         else:
-            status, error, c_code, decompiled_locals = outcomes[addr]
+            status, error, c_code, decompiled_locals, pcode_payload = outcomes[addr]
             notes = _decompiler_notes(c_code)
             polished = False
             if status == STATUS_SUCCESS and polish:
@@ -1448,6 +1500,13 @@ def _export_all(
                 content = header + _failure_comment(error)
 
         atomic_write_text(c_path, content)
+        pcode_artifacts: dict[str, str] = {}
+        if pcode and pcode_payload is not None:
+            atomic_write_json(pcode_path, pcode_payload)
+            pcode_artifacts = {
+                "pcode": str(pcode_path.relative_to(output)),
+                "pcode_sha256": sha256_file(pcode_path),
+            }
         references, calls = _extract_function_references(program, func)
         # An empty list means the decompiler produced no variables — for a failed
         # or empty function that is not an answer, so fall back to Ghidra's view
@@ -1483,6 +1542,7 @@ def _export_all(
                     "pseudocode_sha256": sha256_file(c_path),
                     "assembly": str(assembly_path.relative_to(output)),
                     "assembly_sha256": sha256_file(assembly_path),
+                    **pcode_artifacts,
                 },
                 "decompilation": {
                     "status": status,

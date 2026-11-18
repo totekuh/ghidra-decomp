@@ -31,6 +31,7 @@ ghidra-decomp ./firmware.bin -o ./firmware_decomp
 | `-o, --output` | Output directory | `<binary>_decomp/` |
 | `--timeout` | Per-function decompilation timeout (seconds) | 60 |
 | `--combined` | Also emit `all_functions.c` | off |
+| `--pcode` | Also emit `<function>.pcode.json` per function: SSA high-pcode ops, def-use, block CFG, varnode storage, and resolved call arguments | off |
 | `--ghidra-path` | Path to Ghidra install | `$GHIDRA_INSTALL_DIR` |
 | `--base-addr` | Rebase binary to this address before analysis | none |
 | `--entry` | Mark address as entry point before analysis | none |
@@ -76,6 +77,7 @@ firmware_decomp/
 ├── functions/
 │   ├── 00010000_<digest>_main.c
 │   ├── 00010000_<digest>_main.json
+│   ├── 00010000_<digest>_main.pcode.json   # --pcode
 │   └── ...
 ├── assembly/
 │   ├── 00010000_<digest>_main.s

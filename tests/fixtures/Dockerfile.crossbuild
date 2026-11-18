@@ -1,5 +1,14 @@
-FROM ubuntu:noble
+# Base image pinned by digest so the toolchain layer does not drift with the
+# rolling `noble` tag. Bump deliberately when a newer base is wanted.
+FROM ubuntu:noble@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5
 
+# The LLVM packages are intentionally NOT version-pinned. apt.llvm.org's
+# per-release repo serves rolling 21.x patches and garbage-collects old debs, so
+# a hard `clang-21=<exact>` pin would break once that patch is dropped. The
+# fixture build scripts instead reject any non-21 major and record the exact
+# compiler/linker version in their provenance; the --pcode e2e asserts
+# structural facts rather than exact bytes, so a 21.x patch bump cannot change
+# its result.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         wget gnupg software-properties-common python3 && \
     wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | \
@@ -16,3 +25,10 @@ COPY tests/fixtures/multiarch.c tests/fixtures/build_multiarch.sh \
 
 RUN CC=clang-21 LD=ld.lld-21 ./build_multiarch.sh && \
     CC=clang-21 LD=ld.lld-21 ./build_polish.sh
+
+# The pcode fixtures are built in their own layer so editing pcode_test.c
+# rebuilds only them, not the multiarch/polish families. The --pcode e2e test
+# compiles these fresh from source on every run via this image, so a change to
+# the source is always picked up rather than depending on a committed binary.
+COPY tests/fixtures/pcode_test.c tests/fixtures/build_pcode.sh ./
+RUN CC=clang-21 LD=ld.lld-21 ./build_pcode.sh

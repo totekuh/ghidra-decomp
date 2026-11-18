@@ -44,6 +44,14 @@ from .decompiler import (
     help="Also emit all_functions.c containing every function.",
 )
 @click.option(
+    "--pcode",
+    is_flag=True,
+    default=False,
+    help="Also emit a <function>.pcode.json per function: SSA high-pcode ops, "
+    "def-use, the block CFG, varnode storage, and resolved call arguments. "
+    "Large output; off by default.",
+)
+@click.option(
     "--ghidra-path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="GHIDRA_INSTALL_DIR",
@@ -226,6 +234,7 @@ def main(
     output: Path | None,
     timeout: int,
     combined: bool,
+    pcode: bool,
     ghidra_path: Path | None,
     base_addr: str | None,
     entry: str | None,
@@ -292,6 +301,7 @@ def main(
         output,
         timeout=timeout,
         combined=combined,
+        pcode=pcode,
         ghidra_path=ghidra_path,
         base_addr=base_addr,
         entry=entry,

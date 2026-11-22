@@ -19,7 +19,6 @@ from .pcode import (
     VarnodeNamer,
     op_inputs,
     space_name,
-    varnode_ref,
 )
 
 ALLOC_MAP_SCHEMA_VERSION = 1
@@ -72,7 +71,9 @@ DEFAULT_ALLOCATORS: dict[str, dict[str, Any] | None] = {
 }
 
 
-def load_allocators(config_path: Path | None = None) -> dict[str, dict[str, Any] | None]:
+def load_allocators(
+    config_path: Path | None = None,
+) -> dict[str, dict[str, Any] | None]:
     """Return the allocator catalogue, optionally extended by a JSON config."""
     allocators = dict(DEFAULT_ALLOCATORS)
     if config_path is not None:
@@ -236,10 +237,18 @@ def _classify_store(
     }
 
 
-_FORWARDING_OPS = frozenset({
-    "COPY", "CAST", "INT_ZEXT", "INT_SEXT", "SUBPIECE", "PTRADD", "PTRSUB",
-    "INT_ADD",
-})
+_FORWARDING_OPS = frozenset(
+    {
+        "COPY",
+        "CAST",
+        "INT_ZEXT",
+        "INT_SEXT",
+        "SUBPIECE",
+        "PTRADD",
+        "PTRSUB",
+        "INT_ADD",
+    }
+)
 
 
 def _follow_output(
@@ -297,12 +306,14 @@ def _follow_output(
                     call_seq = op.getSeqnum().getTime()
                 except Exception:  # noqa: BLE001, S110
                     pass
-                passed_to.append({
-                    "callee": callee_name,
-                    "callee_addr": callee_addr,
-                    "call_seq": call_seq,
-                    "arg_index": arg_index,
-                })
+                passed_to.append(
+                    {
+                        "callee": callee_name,
+                        "callee_addr": callee_addr,
+                        "call_seq": call_seq,
+                        "arg_index": arg_index,
+                    }
+                )
         elif mnemonic == "RETURN":
             returned = True
 

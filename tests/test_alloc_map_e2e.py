@@ -20,7 +20,6 @@ from conftest import (
     require_docker,
     require_ghidra,
     run_export,
-    sha256_of,
 )
 
 
@@ -360,7 +359,8 @@ class TestAllocComplex2Negative:
         # dealloc contains "alloc" so the heuristic may fire for it.
         # Filter to only known allocator names (malloc/calloc/realloc etc.)
         real_alloc_entries = [
-            e for e in entries
+            e
+            for e in entries
             if e["callee"] in ("malloc", "calloc", "realloc", "kmalloc", "kzalloc")
         ]
         assert real_alloc_entries == [], (
@@ -394,13 +394,21 @@ def test_alloc_map_deterministic_across_workers(
     serial_out = tmp_path / "serial"
     parallel_out = tmp_path / "parallel"
     run_export(
-        fixture, serial_out,
-        "--pcode", "--alloc-map", "--workers", "1",
+        fixture,
+        serial_out,
+        "--pcode",
+        "--alloc-map",
+        "--workers",
+        "1",
         ghidra_path=ghidra_path,
     )
     run_export(
-        fixture, parallel_out,
-        "--pcode", "--alloc-map", "--workers", "4",
+        fixture,
+        parallel_out,
+        "--pcode",
+        "--alloc-map",
+        "--workers",
+        "4",
         ghidra_path=ghidra_path,
     )
     serial = load_json(serial_out, "alloc_map.json")

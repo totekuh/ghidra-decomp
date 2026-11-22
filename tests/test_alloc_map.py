@@ -7,11 +7,17 @@ No embedded Ghidra needed.
 from __future__ import annotations
 
 import json
-import textwrap
-from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
+# ── reuse pcode fakes ────────────────────────────────────────────────────
+from test_pcode import (
+    FakeOp,
+    FakeVarnode,
+    const,
+    fake_func,
+    fake_high_function,
+    fake_program,
+)
 
 from ghidra_decomp.alloc_map import (
     ALLOC_MAP_SCHEMA_VERSION,
@@ -21,18 +27,6 @@ from ghidra_decomp.alloc_map import (
     serialize_alloc_map,
 )
 from ghidra_decomp.pcode import VarnodeNamer
-
-# ── reuse pcode fakes ────────────────────────────────────────────────────
-
-from test_pcode import (  # noqa: E402
-    FakeOp,
-    FakeVarnode,
-    const,
-    fake_func,
-    fake_high_function,
-    fake_program,
-)
-
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -71,9 +65,20 @@ def _build(ops, func_name="test_func", callee_name="malloc", callee_addr="004062
 
 def test_default_allocators_complete():
     expected = {
-        "malloc", "calloc", "realloc", "kmalloc", "kzalloc", "kcalloc",
-        "devm_kmalloc", "devm_kzalloc", "devm_kcalloc", "alloc_skb",
-        "strdup", "strndup", "valloc", "pvalloc",
+        "malloc",
+        "calloc",
+        "realloc",
+        "kmalloc",
+        "kzalloc",
+        "kcalloc",
+        "devm_kmalloc",
+        "devm_kzalloc",
+        "devm_kcalloc",
+        "alloc_skb",
+        "strdup",
+        "strndup",
+        "valloc",
+        "pvalloc",
     }
     assert expected <= set(DEFAULT_ALLOCATORS)
 
@@ -196,16 +201,18 @@ def test_passed_to_call():
     call = FakeOp("CALL", alloc_out, [target, const(64)])
 
     use_target = _callee_addr("use_buffer", "00407000")
-    use_program = fake_program(functions={"00407000": SimpleNamespace(getName=lambda: "use_buffer")})
+    fake_program(functions={"00407000": SimpleNamespace(getName=lambda: "use_buffer")})
     use_call = FakeOp("CALL", FakeVarnode(0x999), [use_target, alloc_out, const(10)])
 
     # Build manually to use the multi-function program
     hf = fake_high_function([call, use_call])
     func = fake_func(name="test_func")
-    program = fake_program(functions={
-        "00406230": SimpleNamespace(getName=lambda: "malloc"),
-        "00407000": SimpleNamespace(getName=lambda: "use_buffer"),
-    })
+    program = fake_program(
+        functions={
+            "00406230": SimpleNamespace(getName=lambda: "malloc"),
+            "00407000": SimpleNamespace(getName=lambda: "use_buffer"),
+        }
+    )
     namer = VarnodeNamer()
     for op in [call, use_call]:
         out = op.getOutput()
@@ -215,7 +222,9 @@ def test_passed_to_call():
             if inp is not None and not inp.isConstant():
                 namer.id_for(inp)
 
-    entries = build_alloc_entries(hf, func, program, namer, DEFAULT_ALLOCATORS, [call, use_call])
+    entries = build_alloc_entries(
+        hf, func, program, namer, DEFAULT_ALLOCATORS, [call, use_call]
+    )
     assert len(entries) == 1
     assert len(entries[0]["returns"]["passed_to"]) >= 1
     pt = entries[0]["returns"]["passed_to"][0]
@@ -324,10 +333,12 @@ def test_chained_malloc_then_realloc():
 
     hf = fake_high_function([call1, call2])
     func = fake_func(name="alloc_chain")
-    program = fake_program(functions={
-        "00406230": SimpleNamespace(getName=lambda: "malloc"),
-        "00406240": SimpleNamespace(getName=lambda: "realloc"),
-    })
+    program = fake_program(
+        functions={
+            "00406230": SimpleNamespace(getName=lambda: "malloc"),
+            "00406240": SimpleNamespace(getName=lambda: "realloc"),
+        }
+    )
     namer = VarnodeNamer()
     for op in [call1, call2]:
         out = op.getOutput()
@@ -337,7 +348,9 @@ def test_chained_malloc_then_realloc():
             if inp is not None and not inp.isConstant():
                 namer.id_for(inp)
 
-    entries = build_alloc_entries(hf, func, program, namer, DEFAULT_ALLOCATORS, [call1, call2])
+    entries = build_alloc_entries(
+        hf, func, program, namer, DEFAULT_ALLOCATORS, [call1, call2]
+    )
     assert len(entries) == 2
     callees = [e["callee"] for e in entries]
     assert "malloc" in callees
@@ -398,15 +411,19 @@ def test_alloc_passed_to_two_consumers():
     consume_call = FakeOp("CALL", FakeVarnode(0x900), [consume_target, alloc_out])
 
     memset_target = _callee_addr("memset_fake", "00407100")
-    memset_call = FakeOp("CALL", FakeVarnode(0x901), [memset_target, alloc_out, const(0), const(300)])
+    memset_call = FakeOp(
+        "CALL", FakeVarnode(0x901), [memset_target, alloc_out, const(0), const(300)]
+    )
 
     hf = fake_high_function([call, consume_call, memset_call])
     func = fake_func(name="alloc_fanout")
-    program = fake_program(functions={
-        "00406230": SimpleNamespace(getName=lambda: "malloc"),
-        "00407000": SimpleNamespace(getName=lambda: "consume"),
-        "00407100": SimpleNamespace(getName=lambda: "memset_fake"),
-    })
+    program = fake_program(
+        functions={
+            "00406230": SimpleNamespace(getName=lambda: "malloc"),
+            "00407000": SimpleNamespace(getName=lambda: "consume"),
+            "00407100": SimpleNamespace(getName=lambda: "memset_fake"),
+        }
+    )
     namer = VarnodeNamer()
     for op in [call, consume_call, memset_call]:
         out = op.getOutput()
@@ -416,8 +433,9 @@ def test_alloc_passed_to_two_consumers():
             if inp is not None and not inp.isConstant():
                 namer.id_for(inp)
 
-    entries = build_alloc_entries(hf, func, program, namer, DEFAULT_ALLOCATORS,
-                                 [call, consume_call, memset_call])
+    entries = build_alloc_entries(
+        hf, func, program, namer, DEFAULT_ALLOCATORS, [call, consume_call, memset_call]
+    )
     assert len(entries) == 1
     passed = entries[0]["returns"]["passed_to"]
     callee_names = {pt["callee"] for pt in passed}
@@ -442,14 +460,18 @@ def test_alloc_store_and_passed_to_same_entry():
 
     # Also passed to memset_fake
     memset_target = _callee_addr("memset_fake", "00407100")
-    memset_call = FakeOp("CALL", FakeVarnode(0x901), [memset_target, copied, const(0), const(512)])
+    memset_call = FakeOp(
+        "CALL", FakeVarnode(0x901), [memset_target, copied, const(0), const(512)]
+    )
 
     hf = fake_high_function([call, copy, ptradd, store, memset_call])
     func = fake_func(name="alloc_via_local")
-    program = fake_program(functions={
-        "00406230": SimpleNamespace(getName=lambda: "malloc"),
-        "00407100": SimpleNamespace(getName=lambda: "memset_fake"),
-    })
+    program = fake_program(
+        functions={
+            "00406230": SimpleNamespace(getName=lambda: "malloc"),
+            "00407100": SimpleNamespace(getName=lambda: "memset_fake"),
+        }
+    )
     namer = VarnodeNamer()
     for op in [call, copy, ptradd, store, memset_call]:
         out = op.getOutput()
@@ -459,8 +481,14 @@ def test_alloc_store_and_passed_to_same_entry():
             if inp is not None and not inp.isConstant():
                 namer.id_for(inp)
 
-    entries = build_alloc_entries(hf, func, program, namer, DEFAULT_ALLOCATORS,
-                                 [call, copy, ptradd, store, memset_call])
+    entries = build_alloc_entries(
+        hf,
+        func,
+        program,
+        namer,
+        DEFAULT_ALLOCATORS,
+        [call, copy, ptradd, store, memset_call],
+    )
     assert len(entries) == 1
     assert entries[0]["stores"], "expected a field store"
     assert entries[0]["returns"]["passed_to"], "expected a passed_to entry"
@@ -474,9 +502,11 @@ def test_kernel_allocator_kzalloc():
 
     hf = fake_high_function([call])
     func = fake_func(name="kern_init")
-    program = fake_program(functions={
-        "00406300": SimpleNamespace(getName=lambda: "kzalloc"),
-    })
+    program = fake_program(
+        functions={
+            "00406300": SimpleNamespace(getName=lambda: "kzalloc"),
+        }
+    )
     namer = VarnodeNamer()
     namer.id_for(output)
 
@@ -497,9 +527,11 @@ def test_devm_kmalloc_size_at_arg1():
 
     hf = fake_high_function([call])
     func = fake_func(name="probe")
-    program = fake_program(functions={
-        "00406400": SimpleNamespace(getName=lambda: "devm_kmalloc"),
-    })
+    program = fake_program(
+        functions={
+            "00406400": SimpleNamespace(getName=lambda: "devm_kmalloc"),
+        }
+    )
     namer = VarnodeNamer()
     namer.id_for(output)
     namer.id_for(dev_vn)
@@ -518,9 +550,11 @@ def test_kcalloc_product_with_flags():
 
     hf = fake_high_function([call])
     func = fake_func(name="kern_alloc")
-    program = fake_program(functions={
-        "00406500": SimpleNamespace(getName=lambda: "kcalloc"),
-    })
+    program = fake_program(
+        functions={
+            "00406500": SimpleNamespace(getName=lambda: "kcalloc"),
+        }
+    )
     namer = VarnodeNamer()
     namer.id_for(output)
 
@@ -539,9 +573,11 @@ def test_calloc_one_variable_arg_is_variable():
 
     hf = fake_high_function([call])
     func = fake_func(name="dyn_calloc")
-    program = fake_program(functions={
-        "00406240": SimpleNamespace(getName=lambda: "calloc"),
-    })
+    program = fake_program(
+        functions={
+            "00406240": SimpleNamespace(getName=lambda: "calloc"),
+        }
+    )
     namer = VarnodeNamer()
     namer.id_for(output)
     namer.id_for(count_vn)
@@ -563,9 +599,11 @@ def test_free_not_treated_as_allocator():
 
     hf = fake_high_function([call])
     func = fake_func(name="cleanup")
-    program = fake_program(functions={
-        "00405100": SimpleNamespace(getName=lambda: "free"),
-    })
+    program = fake_program(
+        functions={
+            "00405100": SimpleNamespace(getName=lambda: "free"),
+        }
+    )
     namer = VarnodeNamer()
     namer.id_for(output)
 
@@ -577,14 +615,24 @@ def test_memcpy_not_treated_as_allocator():
     """memcpy must not match the alloc heuristic."""
     target = _callee_addr("memcpy", "00405200")
     output = FakeVarnode(0x200)
-    call = FakeOp("CALL", output, [target, FakeVarnode(0x100, space="register"),
-                                    FakeVarnode(0x101, space="register"), const(64)])
+    call = FakeOp(
+        "CALL",
+        output,
+        [
+            target,
+            FakeVarnode(0x100, space="register"),
+            FakeVarnode(0x101, space="register"),
+            const(64),
+        ],
+    )
 
     hf = fake_high_function([call])
     func = fake_func(name="copier")
-    program = fake_program(functions={
-        "00405200": SimpleNamespace(getName=lambda: "memcpy"),
-    })
+    program = fake_program(
+        functions={
+            "00405200": SimpleNamespace(getName=lambda: "memcpy"),
+        }
+    )
     namer = VarnodeNamer()
     namer.id_for(output)
 
@@ -602,9 +650,11 @@ def test_dealloc_not_treated_as_allocator():
 
     hf = fake_high_function([call])
     func = fake_func(name="cleanup2")
-    program = fake_program(functions={
-        "00405300": SimpleNamespace(getName=lambda: "dealloc"),
-    })
+    program = fake_program(
+        functions={
+            "00405300": SimpleNamespace(getName=lambda: "dealloc"),
+        }
+    )
     namer = VarnodeNamer()
     namer.id_for(output)
 
@@ -646,11 +696,13 @@ def test_mixed_alloc_and_non_alloc_calls():
 
     hf = fake_high_function([call_malloc, call_printf, call_free])
     func = fake_func(name="mixed")
-    program = fake_program(functions={
-        "00406230": SimpleNamespace(getName=lambda: "malloc"),
-        "00405000": SimpleNamespace(getName=lambda: "printf"),
-        "00405100": SimpleNamespace(getName=lambda: "free"),
-    })
+    program = fake_program(
+        functions={
+            "00406230": SimpleNamespace(getName=lambda: "malloc"),
+            "00405000": SimpleNamespace(getName=lambda: "printf"),
+            "00405100": SimpleNamespace(getName=lambda: "free"),
+        }
+    )
     namer = VarnodeNamer()
     for op in [call_malloc, call_printf, call_free]:
         out = op.getOutput()
@@ -660,8 +712,14 @@ def test_mixed_alloc_and_non_alloc_calls():
             if inp is not None and not inp.isConstant():
                 namer.id_for(inp)
 
-    entries = build_alloc_entries(hf, func, program, namer, DEFAULT_ALLOCATORS,
-                                 [call_malloc, call_printf, call_free])
+    entries = build_alloc_entries(
+        hf,
+        func,
+        program,
+        namer,
+        DEFAULT_ALLOCATORS,
+        [call_malloc, call_printf, call_free],
+    )
     assert len(entries) == 1
     assert entries[0]["callee"] == "malloc"
 
@@ -685,9 +743,11 @@ def test_strdup_produces_entry_with_null_size():
 
     hf = fake_high_function([call])
     func = fake_func(name="dup_str")
-    program = fake_program(functions={
-        "00406600": SimpleNamespace(getName=lambda: "strdup"),
-    })
+    program = fake_program(
+        functions={
+            "00406600": SimpleNamespace(getName=lambda: "strdup"),
+        }
+    )
     namer = VarnodeNamer()
     namer.id_for(output)
     namer.id_for(str_vn)
@@ -708,9 +768,11 @@ def test_realloc_size_at_index_1():
 
     hf = fake_high_function([call])
     func = fake_func(name="grow_buf")
-    program = fake_program(functions={
-        "00406240": SimpleNamespace(getName=lambda: "realloc"),
-    })
+    program = fake_program(
+        functions={
+            "00406240": SimpleNamespace(getName=lambda: "realloc"),
+        }
+    )
     namer = VarnodeNamer()
     namer.id_for(output)
     namer.id_for(old_ptr)

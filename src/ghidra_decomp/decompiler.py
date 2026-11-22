@@ -16,6 +16,11 @@ from pathlib import Path
 import click
 
 from . import __version__
+from .alloc_map import (
+    build_alloc_entries,
+    load_allocators,
+    serialize_alloc_map,
+)
 from .artifacts import (
     SCHEMA_VERSION,
     atomic_write_chunks,
@@ -32,13 +37,7 @@ from .artifacts import (
     staging_prefix,
     validate_destination,
 )
-from .alloc_map import (
-    ALLOC_MAP_SCHEMA_VERSION,
-    build_alloc_entries,
-    load_allocators,
-    serialize_alloc_map,
-)
-from .pcode import serialize_high_function, serialize_high_function_with_context
+from .pcode import serialize_high_function_with_context
 
 PROJECT_NAME = "project"
 
@@ -1264,7 +1263,14 @@ def _decompile_one(
         decomp_func = result.getDecompiledFunction()
         c_code = decomp_func.getC() if decomp_func else None
         if c_code:
-            return STATUS_SUCCESS, None, str(c_code), locals_, pcode_payload, alloc_entries
+            return (
+                STATUS_SUCCESS,
+                None,
+                str(c_code),
+                locals_,
+                pcode_payload,
+                alloc_entries,
+            )
         return (
             STATUS_FALLBACK,
             "decompiler returned no C output",
@@ -1303,7 +1309,10 @@ def _serialize_pcode(
             high_function, func, program, schema_version=SCHEMA_VERSION
         )
     except Exception as e:  # noqa: BLE001 - one function must not sink the run
-        return {"function": func.getName(), "error": f"pcode serialization failed: {e}"}, None
+        return {
+            "function": func.getName(),
+            "error": f"pcode serialization failed: {e}",
+        }, None
 
     alloc_entries: list[dict] | None = None
     if alloc_map and namer is not None and ops_raw is not None:
@@ -1364,12 +1373,20 @@ def _decompile_functions(
         return (
             func.getEntryPoint().toString(),
             _decompile_one(
-                decomp, monitor, func, timeout, program, pcode,
-                alloc_map=alloc_map, allocators=allocators,
+                decomp,
+                monitor,
+                func,
+                timeout,
+                program,
+                pcode,
+                alloc_map=alloc_map,
+                allocators=allocators,
             ),
         )
 
-    results: dict[str, tuple[str, str | None, str, list[dict], dict | None, list[dict] | None]] = {}
+    results: dict[
+        str, tuple[str, str | None, str, list[dict], dict | None, list[dict] | None]
+    ] = {}
     try:
         if workers <= 1:
             with click.progressbar(
@@ -1477,8 +1494,14 @@ def _export_all(
         not in reusable
     ]
     outcomes = _decompile_functions(
-        program, pending, timeout, workers, max_payload_mb=max_payload_mb, pcode=pcode,
-        alloc_map=alloc_map, allocators=allocators,
+        program,
+        pending,
+        timeout,
+        workers,
+        max_payload_mb=max_payload_mb,
+        pcode=pcode,
+        alloc_map=alloc_map,
+        allocators=allocators,
     )
 
     # Writing artifacts and reading Ghidra metadata stay serial and in
@@ -1529,7 +1552,9 @@ def _export_all(
             error = "function contains no instructions"
             content = header + _failure_comment(error)
         else:
-            status, error, c_code, decompiled_locals, pcode_payload, alloc_entries = outcomes[addr]
+            status, error, c_code, decompiled_locals, pcode_payload, alloc_entries = (
+                outcomes[addr]
+            )
             if alloc_entries:
                 all_alloc_entries.extend(alloc_entries)
             notes = _decompiler_notes(c_code)

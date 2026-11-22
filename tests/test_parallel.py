@@ -81,6 +81,7 @@ def test_a_decompiled_function_reports_success_and_its_c():
         "int f(void) { }",
         [],
         None,
+        None,
     )
 
 
@@ -205,7 +206,7 @@ def test_every_function_is_decompiled_exactly_once(fake_ghidra):
 
     assert set(results) == {func.getEntryPoint().toString() for func in functions}
     assert sum(len(interface.timeouts) for interface in fake_ghidra) == len(functions)
-    for address, (status, _, c_code, _locals, _pcode) in results.items():
+    for address, (status, _, c_code, _locals, _pcode, _alloc) in results.items():
         assert status == STATUS_SUCCESS
         assert c_code == f"/* {address} */"
 
@@ -232,6 +233,7 @@ def test_results_do_not_depend_on_worker_count(fake_ghidra, workers):
             None,
             f"/* {func.getEntryPoint().toString()} */",
             [],
+            None,
             None,
         )
         for func in functions
@@ -291,7 +293,7 @@ def test_decompiled_locals_are_returned_from_the_worker():
         decompileFunction=lambda func, timeout, monitor: _result(symbols=symbols)
     )
 
-    status, _, _, locals_, _ = _decompile_one(decomp, None, _function("1000"), 30)
+    status, _, _, locals_, *_ = _decompile_one(decomp, None, _function("1000"), 30)
 
     assert status == STATUS_SUCCESS
     # Locals must be plain data: the decompilation result belongs to the worker
@@ -317,7 +319,7 @@ def test_locals_are_empty_when_no_high_function_is_available():
         decompileFunction=lambda func, timeout, monitor: _result(high=False)
     )
 
-    status, _, _, locals_, _ = _decompile_one(decomp, None, _function("1000"), 30)
+    status, _, _, locals_, *_ = _decompile_one(decomp, None, _function("1000"), 30)
 
     assert status == STATUS_SUCCESS
     assert locals_ == []
@@ -327,7 +329,7 @@ def test_a_failed_function_returns_no_locals():
     def raiser(func, timeout, monitor):
         raise RuntimeError("boom")
 
-    _, _, _, locals_, _ = _decompile_one(
+    _, _, _, locals_, *_ = _decompile_one(
         SimpleNamespace(decompileFunction=raiser), None, _function("1000"), 30
     )
 
@@ -343,7 +345,7 @@ def test_a_declined_function_still_reports_the_locals_it_produced():
         )
     )
 
-    status, _, _, locals_, _ = _decompile_one(decomp, None, _function("1000"), 30)
+    status, _, _, locals_, *_ = _decompile_one(decomp, None, _function("1000"), 30)
 
     assert status == STATUS_FALLBACK
     assert [item["name"] for item in locals_] == ["uVar1"]

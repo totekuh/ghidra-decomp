@@ -32,3 +32,8 @@ RUN CC=clang-21 LD=ld.lld-21 ./build_multiarch.sh && \
 # the source is always picked up rather than depending on a committed binary.
 COPY tests/fixtures/pcode_test.c tests/fixtures/build_pcode.sh ./
 RUN CC=clang-21 LD=ld.lld-21 ./build_pcode.sh
+
+COPY tests/fixtures/alloc_basic.c tests/fixtures/alloc_xfunc.c \
+     tests/fixtures/alloc_complex.c tests/fixtures/alloc_complex2.c \
+     tests/fixtures/build_alloc.sh ./
+RUN CC=clang-21 LD=ld.lld-21 ./build_alloc.sh

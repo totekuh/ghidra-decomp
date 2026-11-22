@@ -20,6 +20,7 @@ from typing import Any
 # Ghidra's own parameter analysis already recovered, so we never redo
 # calling-convention recovery by hand.
 _CALL_OPS = frozenset({"CALL", "CALLIND"})
+CALL_OPS = _CALL_OPS
 
 
 def _space_name(varnode) -> str:
@@ -63,6 +64,9 @@ class _VarnodeNamer:
         return existing
 
 
+VarnodeNamer = _VarnodeNamer
+
+
 def _varnode_ref(varnode, namer: _VarnodeNamer) -> dict[str, Any]:
     """Serialize one varnode as it appears in an op's inputs/output.
 
@@ -93,6 +97,11 @@ def _op_inputs(op) -> list:
         return list(op.getInputs())
     except Exception:  # noqa: BLE001 - fall back to the indexed accessors
         return [op.getInput(i) for i in range(op.getNumInputs())]
+
+
+space_name = _space_name
+varnode_ref = _varnode_ref
+op_inputs = _op_inputs
 
 
 def _storage_record(storage) -> dict[str, Any]:
@@ -445,17 +454,17 @@ def _arch(program) -> str | None:
             return None
 
 
-def serialize_high_function(
+def serialize_high_function_with_context(
     high_function, func, program, *, schema_version: int
-) -> dict[str, Any] | None:
-    """Serialize one ``HighFunction`` to the pcode fact envelope.
+) -> tuple[dict[str, Any] | None, _VarnodeNamer | None, list | None]:
+    """Like :func:`serialize_high_function` but also returns the namer and raw ops.
 
-    Returns ``None`` when no high function is available (a thunk or a decompiler
-    error), which the writer turns into an ``{"function", "error"}`` record the
-    way the sidecar reports ``decompilation.status``.
+    Callers that need to run further analysis with consistent varnode IDs (e.g.
+    the alloc-map builder) use this variant to share the namer that assigned the
+    ``v0, v1, …`` identifiers during serialization.
     """
     if high_function is None:
-        return None
+        return None, None, None
 
     ops_raw = list(high_function.getPcodeOps())
     namer = _VarnodeNamer()
@@ -484,7 +493,7 @@ def serialize_high_function(
         for address_range in func.getBody().getAddressRanges(True)
     ]
 
-    return {
+    payload = {
         "schema_version": schema_version,
         "function": func.getName(),
         "entry": entry,
@@ -497,3 +506,19 @@ def serialize_high_function(
         "locals": _stack_locals(high_function),
         "rodata": _rodata_reads(ops_raw, program),
     }
+    return payload, namer, ops_raw
+
+
+def serialize_high_function(
+    high_function, func, program, *, schema_version: int
+) -> dict[str, Any] | None:
+    """Serialize one ``HighFunction`` to the pcode fact envelope.
+
+    Returns ``None`` when no high function is available (a thunk or a decompiler
+    error), which the writer turns into an ``{"function", "error"}`` record the
+    way the sidecar reports ``decompilation.status``.
+    """
+    payload, _, _ = serialize_high_function_with_context(
+        high_function, func, program, schema_version=schema_version
+    )
+    return payload

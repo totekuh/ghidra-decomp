@@ -32,7 +32,13 @@ from .artifacts import (
     staging_prefix,
     validate_destination,
 )
-from .pcode import serialize_high_function
+from .alloc_map import (
+    ALLOC_MAP_SCHEMA_VERSION,
+    build_alloc_entries,
+    load_allocators,
+    serialize_alloc_map,
+)
+from .pcode import serialize_high_function, serialize_high_function_with_context
 
 PROJECT_NAME = "project"
 
@@ -723,6 +729,8 @@ def decompile_binary(
     polish: bool = True,
     aggressive: bool = False,
     max_payload_mb: int | None = None,
+    alloc_map: bool = False,
+    alloc_map_config: Path | None = None,
 ) -> None:
     """Decompile a binary and write structured output."""
     binary = binary.resolve()
@@ -894,6 +902,8 @@ def decompile_binary(
                     timeout,
                     combined=combined,
                     pcode=pcode,
+                    alloc_map=alloc_map,
+                    alloc_map_config=alloc_map_config,
                     requested_analysis=requested_analysis,
                     request_fingerprint=request_fingerprint,
                     pyghidra_version=pyghidra_version,
@@ -1221,9 +1231,16 @@ def default_workers() -> int:
 
 
 def _decompile_one(
-    decomp, monitor, func, timeout: int, program=None, pcode: bool = False
-) -> tuple[str, str | None, str, list[dict], dict | None]:
-    """Decompile one function: outcome, error, C output, locals, and pcode.
+    decomp,
+    monitor,
+    func,
+    timeout: int,
+    program=None,
+    pcode: bool = False,
+    alloc_map: bool = False,
+    allocators: dict | None = None,
+) -> tuple[str, str | None, str, list[dict], dict | None, list[dict] | None]:
+    """Decompile one function: outcome, error, C output, locals, pcode, alloc entries.
 
     Locals and pcode are converted to plain dicts here rather than returned as
     Ghidra objects, because the decompilation result belongs to the worker that
@@ -1233,22 +1250,28 @@ def _decompile_one(
     try:
         result = decomp.decompileFunction(func, timeout, monitor)
     except Exception as e:  # noqa: BLE001 - isolate function failures
-        return STATUS_FAILED, f"exception: {e}", "", [], None
+        return STATUS_FAILED, f"exception: {e}", "", [], None, None
 
     locals_ = _high_function_locals(result)
-    pcode_payload = _serialize_pcode(result, func, program) if pcode else None
+    pcode_payload: dict | None = None
+    alloc_entries: list[dict] | None = None
+    if pcode:
+        pcode_payload, alloc_entries = _serialize_pcode(
+            result, func, program, alloc_map=alloc_map, allocators=allocators
+        )
 
     if result and result.decompileCompleted():
         decomp_func = result.getDecompiledFunction()
         c_code = decomp_func.getC() if decomp_func else None
         if c_code:
-            return STATUS_SUCCESS, None, str(c_code), locals_, pcode_payload
+            return STATUS_SUCCESS, None, str(c_code), locals_, pcode_payload, alloc_entries
         return (
             STATUS_FALLBACK,
             "decompiler returned no C output",
             "",
             locals_,
             pcode_payload,
+            alloc_entries,
         )
 
     error = (
@@ -1257,28 +1280,41 @@ def _decompile_one(
     # A decompiler that ran out of time did not decline the function; it is
     # retryable and must not be reported as a settled fallback.
     status = STATUS_FAILED if _is_timeout_error(error) else STATUS_FALLBACK
-    return status, str(error), "", locals_, pcode_payload
+    return status, str(error), "", locals_, pcode_payload, alloc_entries
 
 
-def _serialize_pcode(result, func, program) -> dict | None:
-    """Serialize high pcode from a decompilation result, isolating any failure.
+def _serialize_pcode(
+    result, func, program, *, alloc_map: bool = False, allocators: dict | None = None
+) -> tuple[dict | None, list[dict] | None]:
+    """Serialize high pcode and optionally build alloc-map entries.
 
     Runs in the worker where the high function is alive. A serialization failure
     for one function degrades to ``None`` rather than aborting the export, the
     same way ``_high_function_locals`` returns ``[]`` when no model is available.
     """
     if result is None or program is None:
-        return None
+        return None, None
     try:
         high_function = result.getHighFunction()
     except Exception:  # noqa: BLE001
-        return None
+        return None, None
     try:
-        return serialize_high_function(
+        payload, namer, ops_raw = serialize_high_function_with_context(
             high_function, func, program, schema_version=SCHEMA_VERSION
         )
     except Exception as e:  # noqa: BLE001 - one function must not sink the run
-        return {"function": func.getName(), "error": f"pcode serialization failed: {e}"}
+        return {"function": func.getName(), "error": f"pcode serialization failed: {e}"}, None
+
+    alloc_entries: list[dict] | None = None
+    if alloc_map and namer is not None and ops_raw is not None:
+        try:
+            alloc_entries = build_alloc_entries(
+                high_function, func, program, namer, allocators or {}, ops_raw
+            )
+        except Exception:  # noqa: BLE001
+            alloc_entries = None
+
+    return payload, alloc_entries
 
 
 def _decompile_functions(
@@ -1289,7 +1325,9 @@ def _decompile_functions(
     *,
     max_payload_mb: int | None = None,
     pcode: bool = False,
-) -> dict[str, tuple[str, str | None, str, list[dict], dict | None]]:
+    alloc_map: bool = False,
+    allocators: dict | None = None,
+) -> dict[str, tuple[str, str | None, str, list[dict], dict | None, list[dict] | None]]:
     """Decompile every function, keyed by entry address.
 
     Each worker owns one `DecompInterface`; an interface is never shared across
@@ -1325,10 +1363,13 @@ def _decompile_functions(
         decomp, monitor = interface()
         return (
             func.getEntryPoint().toString(),
-            _decompile_one(decomp, monitor, func, timeout, program, pcode),
+            _decompile_one(
+                decomp, monitor, func, timeout, program, pcode,
+                alloc_map=alloc_map, allocators=allocators,
+            ),
         )
 
-    results: dict[str, tuple[str, str | None, str, list[dict], dict | None]] = {}
+    results: dict[str, tuple[str, str | None, str, list[dict], dict | None, list[dict] | None]] = {}
     try:
         if workers <= 1:
             with click.progressbar(
@@ -1361,6 +1402,8 @@ def _export_all(
     *,
     combined: bool = False,
     pcode: bool = False,
+    alloc_map: bool = False,
+    alloc_map_config: Path | None = None,
     requested_analysis: dict,
     request_fingerprint: dict,
     pyghidra_version: str,
@@ -1409,6 +1452,8 @@ def _export_all(
     for item in symbols:
         symbol_addresses.setdefault(item["address"], []).append(item)
 
+    allocators = load_allocators(alloc_map_config) if alloc_map else None
+
     click.echo(f"Functions: {total}")
     reusable = resume_index or {}
     if pcode and reusable:
@@ -1423,6 +1468,7 @@ def _export_all(
         click.echo(f"Reusable functions from the previous corpus: {len(reusable)}")
     records: list[dict] = []
     record_by_address: dict[str, dict] = {}
+    all_alloc_entries: list[dict] = []
 
     pending = [
         func
@@ -1431,7 +1477,8 @@ def _export_all(
         not in reusable
     ]
     outcomes = _decompile_functions(
-        program, pending, timeout, workers, max_payload_mb=max_payload_mb, pcode=pcode
+        program, pending, timeout, workers, max_payload_mb=max_payload_mb, pcode=pcode,
+        alloc_map=alloc_map, allocators=allocators,
     )
 
     # Writing artifacts and reading Ghidra metadata stay serial and in
@@ -1482,7 +1529,9 @@ def _export_all(
             error = "function contains no instructions"
             content = header + _failure_comment(error)
         else:
-            status, error, c_code, decompiled_locals, pcode_payload = outcomes[addr]
+            status, error, c_code, decompiled_locals, pcode_payload, alloc_entries = outcomes[addr]
+            if alloc_entries:
+                all_alloc_entries.extend(alloc_entries)
             notes = _decompiler_notes(c_code)
             polished = False
             if status == STATUS_SUCCESS and polish:
@@ -1674,6 +1723,12 @@ def _export_all(
         indexed_paths.append(combined_path)
 
     secondary: dict = {}
+    if alloc_map:
+        alloc_map_data = serialize_alloc_map(all_alloc_entries)
+        alloc_map_path = output / "alloc_map.json"
+        atomic_write_json(alloc_map_path, alloc_map_data)
+        indexed_paths.append(alloc_map_path)
+        secondary["alloc_map"] = str(alloc_map_path.relative_to(output))
     if gzf:
         gzf_path = output / "program.gzf"
         _export_gzf(program, gzf_path)

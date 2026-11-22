@@ -52,6 +52,21 @@ from .decompiler import (
     "Large output; off by default.",
 )
 @click.option(
+    "--alloc-map",
+    "alloc_map",
+    is_flag=True,
+    default=False,
+    help="Emit alloc_map.json recording every allocation call site, where the "
+    "result pointer is stored, and how it is forwarded. Implies --pcode.",
+)
+@click.option(
+    "--alloc-map-config",
+    "alloc_map_config",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="JSON file extending the built-in allocator list for --alloc-map.",
+)
+@click.option(
     "--ghidra-path",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     envvar="GHIDRA_INSTALL_DIR",
@@ -235,6 +250,8 @@ def main(
     timeout: int,
     combined: bool,
     pcode: bool,
+    alloc_map: bool,
+    alloc_map_config: Path | None,
     ghidra_path: Path | None,
     base_addr: str | None,
     entry: str | None,
@@ -296,12 +313,17 @@ def main(
     if pdb is not None:
         click.echo(f"PDB:     {pdb}")
 
+    if alloc_map:
+        pcode = True
+
     decompile_binary(
         binary,
         output,
         timeout=timeout,
         combined=combined,
         pcode=pcode,
+        alloc_map=alloc_map,
+        alloc_map_config=alloc_map_config,
         ghidra_path=ghidra_path,
         base_addr=base_addr,
         entry=entry,

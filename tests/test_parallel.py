@@ -82,6 +82,7 @@ def test_a_decompiled_function_reports_success_and_its_c():
         [],
         None,
         None,
+        None,
     )
 
 
@@ -206,7 +207,15 @@ def test_every_function_is_decompiled_exactly_once(fake_ghidra):
 
     assert set(results) == {func.getEntryPoint().toString() for func in functions}
     assert sum(len(interface.timeouts) for interface in fake_ghidra) == len(functions)
-    for address, (status, _, c_code, _locals, _pcode, _alloc) in results.items():
+    for address, (
+        status,
+        _,
+        c_code,
+        _locals,
+        _pcode,
+        _alloc,
+        _wrapper,
+    ) in results.items():
         assert status == STATUS_SUCCESS
         assert c_code == f"/* {address} */"
 
@@ -233,6 +242,7 @@ def test_results_do_not_depend_on_worker_count(fake_ghidra, workers):
             None,
             f"/* {func.getEntryPoint().toString()} */",
             [],
+            None,
             None,
             None,
         )

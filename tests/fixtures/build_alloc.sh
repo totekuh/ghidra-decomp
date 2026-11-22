@@ -10,7 +10,7 @@ PYTHON=${PYTHON:-python3}
 ALLOW_UNSUPPORTED_LLVM=${ALLOW_UNSUPPORTED_LLVM:-0}
 COMMON_FLAGS="-O0 -g -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -ffile-prefix-map=$SCRIPT_DIR=/fixture-src -fdebug-prefix-map=$SCRIPT_DIR=/fixture-src -fmacro-prefix-map=$SCRIPT_DIR=/fixture-src"
 RECORDED_COMMON_FLAGS="-O0 -g -ffreestanding -fno-stack-protector -fno-builtin -fno-pic -ffile-prefix-map=<fixture-dir>=/fixture-src -fdebug-prefix-map=<fixture-dir>=/fixture-src -fmacro-prefix-map=<fixture-dir>=/fixture-src"
-SOURCES="alloc_basic alloc_xfunc alloc_complex alloc_complex2"
+SOURCES="alloc_basic alloc_xfunc alloc_complex alloc_complex2 alloc_wrapper"
 OUTPUTS=""
 for src in $SOURCES; do
     for arch in x86_32 armv7 aarch64 mipsel ppc32 riscv64; do

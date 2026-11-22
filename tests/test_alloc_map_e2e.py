@@ -77,12 +77,14 @@ ALLOC_FIXTURES_BASIC = ("alloc_basic_x86_32", "alloc_basic_mipsel")
 ALLOC_FIXTURES_XFUNC = ("alloc_xfunc_x86_32", "alloc_xfunc_mipsel")
 ALLOC_FIXTURES_COMPLEX = ("alloc_complex_x86_32", "alloc_complex_mipsel")
 ALLOC_FIXTURES_COMPLEX2 = ("alloc_complex2_x86_32", "alloc_complex2_mipsel")
+ALLOC_FIXTURES_WRAPPER = ("alloc_wrapper_x86_32", "alloc_wrapper_mipsel")
 
 ALL_ALLOC_FIXTURES = (
     *ALLOC_FIXTURES_BASIC,
     *ALLOC_FIXTURES_XFUNC,
     *ALLOC_FIXTURES_COMPLEX,
     *ALLOC_FIXTURES_COMPLEX2,
+    *ALLOC_FIXTURES_WRAPPER,
 )
 
 
@@ -391,6 +393,125 @@ def test_alloc_map_deterministic_across_workers(
 ):
     """The alloc map must be identical for serial and parallel decompilation."""
     fixture = compiled_alloc_fixtures / "alloc_basic_x86_32"
+    serial_out = tmp_path / "serial"
+    parallel_out = tmp_path / "parallel"
+    run_export(
+        fixture,
+        serial_out,
+        "--pcode",
+        "--alloc-map",
+        "--workers",
+        "1",
+        ghidra_path=ghidra_path,
+    )
+    run_export(
+        fixture,
+        parallel_out,
+        "--pcode",
+        "--alloc-map",
+        "--workers",
+        "4",
+        ghidra_path=ghidra_path,
+    )
+    serial = load_json(serial_out, "alloc_map.json")
+    parallel = load_json(parallel_out, "alloc_map.json")
+    assert serial == parallel
+
+
+# ── Tier 4: wrapper unwrapping ──────────────────────────────────────
+
+
+@pytest.mark.parametrize("fixture", ALLOC_FIXTURES_WRAPPER)
+class TestAllocWrapper:
+    @pytest.fixture(autouse=True)
+    def _output(self, tmp_path, ghidra_path, compiled_alloc_fixtures, fixture):
+        self.output = _run_alloc(
+            compiled_alloc_fixtures / fixture, tmp_path / fixture, ghidra_path
+        )
+
+    def test_simple_wrapper_const_size(self):
+        entries = _entries_for(self.output, "use_buffer")
+        assert len(entries) >= 1
+        e = next(e for e in entries if e["callee"] == "safe_malloc")
+        assert e["size"] == 256
+        assert e["size_expr"] == "const"
+        assert e["unwrapped_via"] is not None
+        assert "calloc" in e["unwrapped_via"]
+
+    def test_simple_wrapper_variable_size(self):
+        entries = _entries_for(self.output, "copy_data")
+        assert len(entries) >= 1
+        e = next(e for e in entries if e["callee"] == "safe_malloc")
+        assert e["size"] is None
+        assert e["size_expr"] == "variable"
+        assert e["unwrapped_via"] is not None
+
+    def test_chain_wrapper(self):
+        entries = _entries_for(self.output, "use_opt")
+        assert len(entries) >= 1
+        e = next(e for e in entries if e["callee"] == "opt_malloc")
+        assert e["size"] == 128
+        assert e["size_expr"] == "const"
+        assert e["unwrapped_via"] is not None
+        assert "opt_malloc" in e["unwrapped_via"]
+        assert "calloc" in e["unwrapped_via"]
+
+    def test_wrapper_field_store(self):
+        entries = _entries_for(self.output, "wrapper_init_ctx")
+        assert len(entries) >= 1
+        e = next(e for e in entries if e["callee"] == "safe_malloc")
+        assert e["size"] == 64
+        assert e["unwrapped_via"] is not None
+        assert e["stores"], f"expected field store; stores={e['stores']}"
+
+    def test_calloc_wrapper_product(self):
+        entries = _entries_for(self.output, "use_safe_calloc")
+        assert len(entries) >= 1
+        e = next(e for e in entries if e["callee"] == "safe_calloc")
+        assert e["size"] == 40
+        assert e["size_expr"] == "product"
+        assert e["unwrapped_via"] is not None
+
+    def test_not_wrapper_multiple_allocs(self):
+        entries = _entries_for(self.output, "use_tricky")
+        tricky = [e for e in entries if e["callee"] == "tricky_alloc"]
+        if tricky:
+            assert tricky[0]["unwrapped_via"] is None
+
+    def test_not_wrapper_arithmetic(self):
+        entries = _entries_for(self.output, "use_header")
+        header = [e for e in entries if e["callee"] == "header_alloc"]
+        if header:
+            assert header[0]["unwrapped_via"] is None
+
+    def test_deep_5_level_chain(self):
+        entries = _entries_for(self.output, "use_deep")
+        assert len(entries) >= 1
+        e = next(e for e in entries if e["callee"] == "w1_alloc")
+        assert e["size"] == 77
+        assert e["size_expr"] == "const"
+        assert e["unwrapped_via"] is not None
+        assert "malloc" in e["unwrapped_via"]
+
+    def test_unwrapped_via_present_on_all_entries(self):
+        data = _alloc_map(self.output)
+        for e in data["entries"]:
+            assert "unwrapped_via" in e, (
+                f"missing unwrapped_via on {e['function']}:{e['callee']}"
+            )
+
+    def test_direct_alloc_has_null_unwrapped_via(self):
+        """Entries for known allocators (malloc/calloc inside wrappers) have null unwrapped_via."""
+        data = _alloc_map(self.output)
+        directs = [e for e in data["entries"] if e["callee"] in ("malloc", "calloc")]
+        for e in directs:
+            assert e["unwrapped_via"] is None, (
+                f"direct {e['callee']} in {e['function']} should have null unwrapped_via"
+            )
+
+
+def test_alloc_wrapper_deterministic(tmp_path, ghidra_path, compiled_alloc_fixtures):
+    fixture = compiled_alloc_fixtures / "alloc_wrapper_x86_32"
     serial_out = tmp_path / "serial"
     parallel_out = tmp_path / "parallel"
     run_export(

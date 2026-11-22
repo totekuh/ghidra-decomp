@@ -23,7 +23,10 @@ from ghidra_decomp.alloc_map import (
     ALLOC_MAP_SCHEMA_VERSION,
     DEFAULT_ALLOCATORS,
     build_alloc_entries,
+    build_wrapper_candidate,
+    detect_wrappers_from_candidates,
     load_allocators,
+    resolve_wrappers,
     serialize_alloc_map,
 )
 from ghidra_decomp.pcode import VarnodeNamer
@@ -797,3 +800,416 @@ def test_serialize_alloc_map_empty():
     result = serialize_alloc_map([])
     assert result["schema_version"] == ALLOC_MAP_SCHEMA_VERSION
     assert result["entries"] == []
+
+
+# ── wrapper detection ───────────────────────────────────────────────────
+
+
+def _build_wrapper(
+    ops, func_name="safe_malloc", callee_name="calloc", callee_addr="00406240"
+):
+    """Build alloc entries + detect wrapper info for a wrapper function."""
+    hf = fake_high_function(ops)
+    func = fake_func(name=func_name)
+    program = _program_with_function(callee_name, callee_addr)
+    namer = VarnodeNamer()
+    for op in ops:
+        out = op.getOutput()
+        if out is not None and not out.isConstant():
+            namer.id_for(out)
+        for inp in op.getInputs():
+            if inp is not None and not inp.isConstant():
+                namer.id_for(inp)
+    entries = build_alloc_entries(hf, func, program, namer, DEFAULT_ALLOCATORS, ops)
+    cand = build_wrapper_candidate(entries, ops, DEFAULT_ALLOCATORS)
+    wrapper = None
+    if cand is not None:
+        db = detect_wrappers_from_candidates({func_name: cand}, DEFAULT_ALLOCATORS)
+        wrapper = db.get(func_name)
+    return entries, wrapper
+
+
+def test_detect_wrapper_simple():
+    """safe_malloc(n) calling calloc(1, n) and returning is a wrapper."""
+    param_n = FakeVarnode(0x100, space="register")  # function param, no def
+    calloc_target = _callee_addr("calloc", "00406240")
+    alloc_out = FakeVarnode(0x200)
+    call = FakeOp("CALL", alloc_out, [calloc_target, const(1), param_n])
+    ret = FakeOp("RETURN", None, [const(0), alloc_out])
+
+    entries, wrapper = _build_wrapper([call, ret])
+    assert len(entries) == 1
+    assert wrapper is not None
+    assert wrapper["inner_allocator"] == "calloc"
+    assert wrapper["size_spec"] == {"index": 0}
+    assert wrapper["chain"] == ["calloc"]
+
+
+def test_detect_wrapper_malloc():
+    """safe_malloc(n) calling malloc(n) is a wrapper with index 0."""
+    param_n = FakeVarnode(0x100, space="register")
+    malloc_target = _callee_addr("malloc", "00406230")
+    alloc_out = FakeVarnode(0x200)
+    call = FakeOp("CALL", alloc_out, [malloc_target, param_n])
+    ret = FakeOp("RETURN", None, [const(0), alloc_out])
+
+    _entries, wrapper = _build_wrapper(
+        [call, ret], callee_name="malloc", callee_addr="00406230"
+    )
+    assert wrapper is not None
+    assert wrapper["inner_allocator"] == "malloc"
+    assert wrapper["size_spec"] == {"index": 0}
+
+
+def test_detect_wrapper_calloc_passthrough():
+    """safe_calloc(count, size) calling calloc(count, size) is a product wrapper."""
+    param_count = FakeVarnode(0x100, space="register")
+    param_size = FakeVarnode(0x101, space="register")
+    calloc_target = _callee_addr("calloc", "00406240")
+    alloc_out = FakeVarnode(0x200)
+    call = FakeOp("CALL", alloc_out, [calloc_target, param_count, param_size])
+    ret = FakeOp("RETURN", None, [const(0), alloc_out])
+
+    _entries, wrapper = _build_wrapper([call, ret])
+    assert wrapper is not None
+    assert wrapper["size_spec"] == {"product": [0, 1]}
+
+
+def test_detect_wrapper_copy_chain():
+    """Wrapper with COPY between param and calloc arg still detects."""
+    param_n = FakeVarnode(0x100, space="register")
+    copied = FakeVarnode(0x101)
+    copy_op = FakeOp("COPY", copied, [param_n])
+    calloc_target = _callee_addr("calloc", "00406240")
+    alloc_out = FakeVarnode(0x200)
+    call = FakeOp("CALL", alloc_out, [calloc_target, const(1), copied])
+    ret = FakeOp("RETURN", None, [const(0), alloc_out])
+
+    _entries, wrapper = _build_wrapper([copy_op, call, ret])
+    assert wrapper is not None
+    assert wrapper["size_spec"] == {"index": 0}
+
+
+def test_not_wrapper_multiple_allocs():
+    """Two malloc calls → not a wrapper."""
+    param_n = FakeVarnode(0x100, space="register")
+    malloc_target = _callee_addr("malloc", "00406230")
+    out1 = FakeVarnode(0x200)
+    call1 = FakeOp("CALL", out1, [malloc_target, param_n])
+    out2 = FakeVarnode(0x300)
+    call2 = FakeOp("CALL", out2, [malloc_target, param_n])
+    ret = FakeOp("RETURN", None, [const(0), out1])
+
+    hf = fake_high_function([call1, call2, ret])
+    func = fake_func(name="tricky_alloc")
+    program = _program_with_function("malloc", "00406230")
+    namer = VarnodeNamer()
+    for op in [call1, call2, ret]:
+        out = op.getOutput()
+        if out is not None and not out.isConstant():
+            namer.id_for(out)
+        for inp in op.getInputs():
+            if inp is not None and not inp.isConstant():
+                namer.id_for(inp)
+    entries = build_alloc_entries(
+        hf, func, program, namer, DEFAULT_ALLOCATORS, [call1, call2, ret]
+    )
+    cand = build_wrapper_candidate(entries, [call1, call2, ret], DEFAULT_ALLOCATORS)
+    assert cand is None
+
+
+def test_not_wrapper_no_return():
+    """Alloc result neither returned nor stored → not a wrapper."""
+    param_n = FakeVarnode(0x100, space="register")
+    malloc_target = _callee_addr("malloc", "00406230")
+    alloc_out = FakeVarnode(0x200)
+    call = FakeOp("CALL", alloc_out, [malloc_target, param_n])
+    ret = FakeOp("RETURN", None, [const(0)])
+
+    _entries, wrapper = _build_wrapper(
+        [call, ret], callee_name="malloc", callee_addr="00406230"
+    )
+    assert wrapper is None
+
+
+# ── wrapper resolution (post-pass) ──────────────────────────────────────
+
+
+def test_resolve_wrapper_const():
+    """Call to safe_malloc(256) resolves to size=256 through wrapper."""
+    entry = {
+        "function": "use_buffer",
+        "function_addr": "00500000",
+        "callee": "safe_malloc",
+        "callee_addr": "00400100",
+        "call_seq": 1,
+        "size": None,
+        "size_expr": "unknown",
+        "size_vn": None,
+        "unwrapped_via": None,
+        "stores": [],
+        "returns": {"output_vn": "v0", "passed_to": [], "returned": False},
+        "_call_args": [{"const": 256}],
+    }
+    wrapper_db = {
+        "safe_malloc": {
+            "inner_allocator": "calloc",
+            "inner_spec": {"product": [0, 1]},
+            "size_spec": {"index": 0},
+            "chain": ["calloc"],
+        },
+    }
+    resolve_wrappers([entry], wrapper_db, DEFAULT_ALLOCATORS)
+    assert entry["size"] == 256
+    assert entry["size_expr"] == "const"
+    assert entry["unwrapped_via"] == "safe_malloc -> calloc"
+    assert "_call_args" not in entry
+
+
+def test_resolve_wrapper_variable():
+    """Call to safe_malloc(len) resolves to variable size through wrapper."""
+    entry = {
+        "function": "copy_data",
+        "function_addr": "00500100",
+        "callee": "safe_malloc",
+        "callee_addr": "00400100",
+        "call_seq": 1,
+        "size": None,
+        "size_expr": "unknown",
+        "size_vn": None,
+        "unwrapped_via": None,
+        "stores": [],
+        "returns": {"output_vn": "v0", "passed_to": [], "returned": False},
+        "_call_args": [{"vn": "v5"}],
+    }
+    wrapper_db = {
+        "safe_malloc": {
+            "inner_allocator": "calloc",
+            "inner_spec": {"product": [0, 1]},
+            "size_spec": {"index": 0},
+            "chain": ["calloc"],
+        },
+    }
+    resolve_wrappers([entry], wrapper_db, DEFAULT_ALLOCATORS)
+    assert entry["size"] is None
+    assert entry["size_expr"] == "variable"
+    assert entry["size_vn"] == "v5"
+    assert entry["unwrapped_via"] == "safe_malloc -> calloc"
+
+
+def test_resolve_wrapper_chain():
+    """opt_malloc(128) → safe_malloc → calloc resolves through 2-level chain."""
+    entry = {
+        "function": "use_opt",
+        "function_addr": "00500200",
+        "callee": "opt_malloc",
+        "callee_addr": "00400200",
+        "call_seq": 1,
+        "size": None,
+        "size_expr": "unknown",
+        "size_vn": None,
+        "unwrapped_via": None,
+        "stores": [],
+        "returns": {"output_vn": "v0", "passed_to": [], "returned": False},
+        "_call_args": [{"const": 128}],
+    }
+    wrapper_db = {
+        "opt_malloc": {
+            "inner_allocator": "safe_malloc",
+            "inner_spec": None,
+            "size_spec": {"index": 0},
+            "chain": ["safe_malloc"],
+        },
+        "safe_malloc": {
+            "inner_allocator": "calloc",
+            "inner_spec": {"product": [0, 1]},
+            "size_spec": {"index": 0},
+            "chain": ["calloc"],
+        },
+    }
+    resolve_wrappers([entry], wrapper_db, DEFAULT_ALLOCATORS)
+    assert entry["size"] == 128
+    assert entry["size_expr"] == "const"
+    assert entry["unwrapped_via"] == "opt_malloc -> safe_malloc -> calloc"
+
+
+def test_resolve_wrapper_product():
+    """safe_calloc(10, 4) resolves to size=40, product."""
+    entry = {
+        "function": "use_safe_calloc",
+        "function_addr": "00500300",
+        "callee": "safe_calloc",
+        "callee_addr": "00400300",
+        "call_seq": 1,
+        "size": None,
+        "size_expr": "unknown",
+        "size_vn": None,
+        "unwrapped_via": None,
+        "stores": [],
+        "returns": {"output_vn": "v0", "passed_to": [], "returned": False},
+        "_call_args": [{"const": 10}, {"const": 4}],
+    }
+    wrapper_db = {
+        "safe_calloc": {
+            "inner_allocator": "calloc",
+            "inner_spec": {"product": [0, 1]},
+            "size_spec": {"product": [0, 1]},
+            "chain": ["calloc"],
+        },
+    }
+    resolve_wrappers([entry], wrapper_db, DEFAULT_ALLOCATORS)
+    assert entry["size"] == 40
+    assert entry["size_expr"] == "product"
+    assert entry["unwrapped_via"] == "safe_calloc -> calloc"
+
+
+def test_resolve_no_unwrap_for_direct():
+    """Direct malloc entry has unwrapped_via=null, no _call_args."""
+    entry = {
+        "function": "test_func",
+        "function_addr": "00500000",
+        "callee": "malloc",
+        "callee_addr": "00406230",
+        "call_seq": 1,
+        "size": 64,
+        "size_expr": "const",
+        "size_vn": None,
+        "unwrapped_via": None,
+        "stores": [],
+        "returns": {"output_vn": "v0", "passed_to": [], "returned": False},
+    }
+    resolve_wrappers([entry], {}, DEFAULT_ALLOCATORS)
+    assert entry["unwrapped_via"] is None
+    assert "_call_args" not in entry
+
+
+def test_resolve_no_unwrap_for_unknown_heuristic():
+    """Heuristic-matched callee not in wrapper_db → stays unknown."""
+    entry = {
+        "function": "caller",
+        "function_addr": "00500000",
+        "callee": "tricky_alloc",
+        "callee_addr": "00400500",
+        "call_seq": 1,
+        "size": None,
+        "size_expr": "unknown",
+        "size_vn": None,
+        "unwrapped_via": None,
+        "stores": [],
+        "returns": {"output_vn": "v0", "passed_to": [], "returned": False},
+        "_call_args": [{"const": 512}],
+    }
+    resolve_wrappers([entry], {}, DEFAULT_ALLOCATORS)
+    assert entry["unwrapped_via"] is None
+    assert entry["size"] is None
+    assert entry["size_expr"] == "unknown"
+
+
+def test_resolve_wrapper_preserves_stores():
+    """Stores at the call site survive unwrapping."""
+    stores = [
+        {
+            "kind": "field",
+            "field_offset": 32,
+            "field_name": None,
+            "base_type": None,
+            "store_seq": 2,
+            "store_vn": "v3",
+        }
+    ]
+    entry = {
+        "function": "wrapper_init_ctx",
+        "function_addr": "00500000",
+        "callee": "safe_malloc",
+        "callee_addr": "00400100",
+        "call_seq": 1,
+        "size": None,
+        "size_expr": "unknown",
+        "size_vn": None,
+        "unwrapped_via": None,
+        "stores": stores,
+        "returns": {"output_vn": "v0", "passed_to": [], "returned": False},
+        "_call_args": [{"const": 64}],
+    }
+    wrapper_db = {
+        "safe_malloc": {
+            "inner_allocator": "calloc",
+            "inner_spec": {"product": [0, 1]},
+            "size_spec": {"index": 0},
+            "chain": ["calloc"],
+        },
+    }
+    resolve_wrappers([entry], wrapper_db, DEFAULT_ALLOCATORS)
+    assert entry["size"] == 64
+    assert entry["unwrapped_via"] == "safe_malloc -> calloc"
+    assert entry["stores"] == stores
+
+
+def test_resolve_wrapper_5_levels():
+    """5-level chain: w5 -> w4 -> w3 -> w2 -> w1 -> malloc. Must resolve."""
+    entry = {
+        "function": "caller",
+        "function_addr": "00500000",
+        "callee": "w5_alloc",
+        "callee_addr": "00400600",
+        "call_seq": 1,
+        "size": None,
+        "size_expr": "unknown",
+        "size_vn": None,
+        "unwrapped_via": None,
+        "stores": [],
+        "returns": {"output_vn": "v0", "passed_to": [], "returned": False},
+        "_call_args": [{"const": 77}],
+    }
+    wrapper_db = {}
+    for i in range(5, 0, -1):
+        name = f"w{i}_alloc"
+        inner = f"w{i - 1}_alloc" if i > 1 else "malloc"
+        wrapper_db[name] = {
+            "inner_allocator": inner,
+            "inner_spec": {"index": 0} if inner == "malloc" else None,
+            "size_spec": {"index": 0},
+            "chain": [inner],
+        }
+    resolve_wrappers([entry], wrapper_db, DEFAULT_ALLOCATORS)
+    assert entry["size"] == 77
+    assert entry["size_expr"] == "const"
+    assert (
+        entry["unwrapped_via"]
+        == "w5_alloc -> w4_alloc -> w3_alloc -> w2_alloc -> w1_alloc -> malloc"
+    )
+
+
+def test_resolve_wrapper_cycle_safe():
+    """Cycle: a -> b -> a. Must not loop forever."""
+    entry = {
+        "function": "caller",
+        "function_addr": "00500000",
+        "callee": "a_alloc",
+        "callee_addr": "00400700",
+        "call_seq": 1,
+        "size": None,
+        "size_expr": "unknown",
+        "size_vn": None,
+        "unwrapped_via": None,
+        "stores": [],
+        "returns": {"output_vn": "v0", "passed_to": [], "returned": False},
+        "_call_args": [{"const": 10}],
+    }
+    wrapper_db = {
+        "a_alloc": {
+            "inner_allocator": "b_alloc",
+            "inner_spec": None,
+            "size_spec": {"index": 0},
+            "chain": ["b_alloc"],
+        },
+        "b_alloc": {
+            "inner_allocator": "a_alloc",
+            "inner_spec": None,
+            "size_spec": {"index": 0},
+            "chain": ["a_alloc"],
+        },
+    }
+    resolve_wrappers([entry], wrapper_db, DEFAULT_ALLOCATORS)
+    assert entry["unwrapped_via"] is None
+    assert entry["size"] is None

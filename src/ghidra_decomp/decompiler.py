@@ -18,7 +18,10 @@ import click
 from . import __version__
 from .alloc_map import (
     build_alloc_entries,
+    build_wrapper_candidate,
+    detect_wrappers_from_candidates,
     load_allocators,
+    resolve_wrappers,
     serialize_alloc_map,
 )
 from .artifacts import (
@@ -1238,8 +1241,10 @@ def _decompile_one(
     pcode: bool = False,
     alloc_map: bool = False,
     allocators: dict | None = None,
-) -> tuple[str, str | None, str, list[dict], dict | None, list[dict] | None]:
-    """Decompile one function: outcome, error, C output, locals, pcode, alloc entries.
+) -> tuple[
+    str, str | None, str, list[dict], dict | None, list[dict] | None, dict | None
+]:
+    """Decompile one function: outcome, error, C output, locals, pcode, alloc entries, wrapper info.
 
     Locals and pcode are converted to plain dicts here rather than returned as
     Ghidra objects, because the decompilation result belongs to the worker that
@@ -1249,13 +1254,14 @@ def _decompile_one(
     try:
         result = decomp.decompileFunction(func, timeout, monitor)
     except Exception as e:  # noqa: BLE001 - isolate function failures
-        return STATUS_FAILED, f"exception: {e}", "", [], None, None
+        return STATUS_FAILED, f"exception: {e}", "", [], None, None, None
 
     locals_ = _high_function_locals(result)
     pcode_payload: dict | None = None
     alloc_entries: list[dict] | None = None
+    wrapper_info: dict | None = None
     if pcode:
-        pcode_payload, alloc_entries = _serialize_pcode(
+        pcode_payload, alloc_entries, wrapper_info = _serialize_pcode(
             result, func, program, alloc_map=alloc_map, allocators=allocators
         )
 
@@ -1270,6 +1276,7 @@ def _decompile_one(
                 locals_,
                 pcode_payload,
                 alloc_entries,
+                wrapper_info,
             )
         return (
             STATUS_FALLBACK,
@@ -1278,6 +1285,7 @@ def _decompile_one(
             locals_,
             pcode_payload,
             alloc_entries,
+            wrapper_info,
         )
 
     error = (
@@ -1286,12 +1294,12 @@ def _decompile_one(
     # A decompiler that ran out of time did not decline the function; it is
     # retryable and must not be reported as a settled fallback.
     status = STATUS_FAILED if _is_timeout_error(error) else STATUS_FALLBACK
-    return status, str(error), "", locals_, pcode_payload, alloc_entries
+    return status, str(error), "", locals_, pcode_payload, alloc_entries, wrapper_info
 
 
 def _serialize_pcode(
     result, func, program, *, alloc_map: bool = False, allocators: dict | None = None
-) -> tuple[dict | None, list[dict] | None]:
+) -> tuple[dict | None, list[dict] | None, dict | None]:
     """Serialize high pcode and optionally build alloc-map entries.
 
     Runs in the worker where the high function is alive. A serialization failure
@@ -1299,22 +1307,27 @@ def _serialize_pcode(
     same way ``_high_function_locals`` returns ``[]`` when no model is available.
     """
     if result is None or program is None:
-        return None, None
+        return None, None, None
     try:
         high_function = result.getHighFunction()
     except Exception:  # noqa: BLE001
-        return None, None
+        return None, None, None
     try:
         payload, namer, ops_raw = serialize_high_function_with_context(
             high_function, func, program, schema_version=SCHEMA_VERSION
         )
     except Exception as e:  # noqa: BLE001 - one function must not sink the run
-        return {
-            "function": func.getName(),
-            "error": f"pcode serialization failed: {e}",
-        }, None
+        return (
+            {
+                "function": func.getName(),
+                "error": f"pcode serialization failed: {e}",
+            },
+            None,
+            None,
+        )
 
     alloc_entries: list[dict] | None = None
+    wrapper_candidate: dict | None = None
     if alloc_map and namer is not None and ops_raw is not None:
         try:
             alloc_entries = build_alloc_entries(
@@ -1322,8 +1335,15 @@ def _serialize_pcode(
             )
         except Exception:  # noqa: BLE001
             alloc_entries = None
+        if alloc_entries:
+            try:
+                wrapper_candidate = build_wrapper_candidate(
+                    alloc_entries, ops_raw, allocators or {}
+                )
+            except Exception:  # noqa: BLE001
+                wrapper_candidate = None
 
-    return payload, alloc_entries
+    return payload, alloc_entries, wrapper_candidate
 
 
 def _decompile_functions(
@@ -1336,7 +1356,12 @@ def _decompile_functions(
     pcode: bool = False,
     alloc_map: bool = False,
     allocators: dict | None = None,
-) -> dict[str, tuple[str, str | None, str, list[dict], dict | None, list[dict] | None]]:
+) -> dict[
+    str,
+    tuple[
+        str, str | None, str, list[dict], dict | None, list[dict] | None, dict | None
+    ],
+]:
     """Decompile every function, keyed by entry address.
 
     Each worker owns one `DecompInterface`; an interface is never shared across
@@ -1385,7 +1410,16 @@ def _decompile_functions(
         )
 
     results: dict[
-        str, tuple[str, str | None, str, list[dict], dict | None, list[dict] | None]
+        str,
+        tuple[
+            str,
+            str | None,
+            str,
+            list[dict],
+            dict | None,
+            list[dict] | None,
+            dict | None,
+        ],
     ] = {}
     try:
         if workers <= 1:
@@ -1486,6 +1520,7 @@ def _export_all(
     records: list[dict] = []
     record_by_address: dict[str, dict] = {}
     all_alloc_entries: list[dict] = []
+    wrapper_candidates: dict[str, dict] = {}
 
     pending = [
         func
@@ -1552,11 +1587,19 @@ def _export_all(
             error = "function contains no instructions"
             content = header + _failure_comment(error)
         else:
-            status, error, c_code, decompiled_locals, pcode_payload, alloc_entries = (
-                outcomes[addr]
-            )
+            (
+                status,
+                error,
+                c_code,
+                decompiled_locals,
+                pcode_payload,
+                alloc_entries,
+                w_info,
+            ) = outcomes[addr]
             if alloc_entries:
                 all_alloc_entries.extend(alloc_entries)
+            if w_info is not None:
+                wrapper_candidates[name] = w_info
             notes = _decompiler_notes(c_code)
             polished = False
             if status == STATUS_SUCCESS and polish:
@@ -1749,6 +1792,10 @@ def _export_all(
 
     secondary: dict = {}
     if alloc_map:
+        wrapper_db = detect_wrappers_from_candidates(
+            wrapper_candidates, allocators or {}
+        )
+        resolve_wrappers(all_alloc_entries, wrapper_db, allocators or {})
         alloc_map_data = serialize_alloc_map(all_alloc_entries)
         alloc_map_path = output / "alloc_map.json"
         atomic_write_json(alloc_map_path, alloc_map_data)

@@ -46,6 +46,10 @@ Homepage = "https://github.com/totekuh/ghidra-decomp"
 Repository = "https://github.com/totekuh/ghidra-decomp"
 Issues = "https://github.com/totekuh/ghidra-decomp/issues"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/ghidra_decomp"]
 

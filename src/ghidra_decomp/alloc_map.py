@@ -4,6 +4,11 @@ Records every allocation call site, where its result pointer is stored, and how
 it flows forward to other calls or the function's return.  The output is a fact
 file — it records what Ghidra sees in the pcode, not opinions about bugs.
 
+Wrapper unwrapping: when a call site targets a simple allocator wrapper (a
+function that calls exactly one known allocator, returns its result, and passes
+a parameter as the size without arithmetic), the entry resolves the size through
+the wrapper chain (up to 2 levels deep).
+
 Must stay importable without Ghidra: every function takes already-live objects
 and only calls methods on them, so unit tests can drive it with fakes.
 """
@@ -20,6 +25,18 @@ from .pcode import (
     op_inputs,
     space_name,
 )
+
+# Re-use the pcode module's identity key so two Java objects referencing the
+# same SSA varnode compare equal.
+try:
+    from .pcode import _varnode_key
+except ImportError:  # pragma: no cover – fallback for older installs
+
+    def _varnode_key(vn):  # type: ignore[misc]
+        defop = vn.getDef()
+        def_time = defop.getSeqnum().getTime() if defop is not None else -1
+        return (space_name(vn), int(vn.getOffset()), int(vn.getSize()), def_time)
+
 
 ALLOC_MAP_SCHEMA_VERSION = 1
 
@@ -320,6 +337,520 @@ def _follow_output(
     return stores, passed_to, returned
 
 
+_PASSTHROUGH_OPS = frozenset({"COPY", "CAST", "INT_ZEXT", "INT_SEXT", "SUBPIECE"})
+
+
+def _trace_backward(varnode):  # type: ignore[no-untyped-def]
+    """Walk backward through COPY/CAST-only chains to the origin varnode.
+
+    Returns the origin varnode.  Stops at the first non-passthrough defining
+    op or at a varnode with no def (a function input or constant).
+    """
+    current = varnode
+    seen: set[tuple] = set()
+    while True:
+        try:
+            key = _varnode_key(current)
+        except Exception:  # noqa: BLE001
+            return current
+        if key in seen:
+            return current
+        seen.add(key)
+        defop = current.getDef() if not current.isConstant() else None
+        if defop is None:
+            return current
+        mnemonic = str(defop.getMnemonic())
+        if mnemonic not in _PASSTHROUGH_OPS:
+            return current
+        inputs = op_inputs(defop)
+        if not inputs:
+            return current
+        current = inputs[0]
+
+
+def _collect_param_varnodes(ops_raw: list) -> list[tuple]:
+    """Identify the function's input parameter varnodes from the pcode.
+
+    In Ghidra's high pcode, function parameters are varnodes with no defining
+    op (getDef() returns None) in register or stack space.  Ram-space varnodes
+    (CALL targets, globals) are excluded.  Returns a list of varnode keys.
+    """
+    seen: set[tuple] = set()
+    params: list[tuple] = []
+    for op in ops_raw:
+        for inp in op_inputs(op):
+            if inp is None or inp.isConstant():
+                continue
+            try:
+                key = _varnode_key(inp)
+            except Exception:  # noqa: BLE001, S112
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            if inp.getDef() is None and space_name(inp) != "ram":
+                params.append(key)
+    return params
+
+
+def _param_index_of(varnode, params: list[tuple]) -> int | None:
+    """Return the positional index of a varnode among the function's parameters."""
+    try:
+        key = _varnode_key(varnode)
+    except Exception:  # noqa: BLE001
+        return None
+    for i, p in enumerate(params):
+        if p == key:
+            return i
+    return None
+
+
+def _alloc_reaches_return_register(entry: dict[str, Any], ops_raw: list) -> bool:
+    """Check if the alloc output reaches a register-space varnode via COPY/CAST.
+
+    On MIPS/ARM, the return value ends up in a register without an explicit
+    RETURN op consuming it in the high pcode.  This catches that pattern.
+    """
+    call_seq = entry.get("call_seq", -1)
+    call_op = _find_alloc_call_op(ops_raw, call_seq)
+    if call_op is None:
+        return False
+    output_vn = call_op.getOutput()
+    if output_vn is None:
+        return False
+    current = output_vn
+    seen: set[tuple] = set()
+    for op in ops_raw:
+        try:
+            if op.getSeqnum().getTime() <= call_seq:
+                continue
+        except Exception:  # noqa: BLE001, S112
+            continue
+        mnemonic = str(op.getMnemonic())
+        if mnemonic not in _PASSTHROUGH_OPS:
+            continue
+        inputs = op_inputs(op)
+        if not inputs:
+            continue
+        try:
+            inp_key = _varnode_key(inputs[0])
+            cur_key = _varnode_key(current)
+        except Exception:  # noqa: BLE001, S112
+            continue
+        if inp_key == cur_key or inp_key in seen:
+            out = op.getOutput()
+            if out is not None:
+                try:
+                    seen.add(_varnode_key(out))
+                except Exception:  # noqa: BLE001, S110
+                    pass
+                if space_name(out) == "register":
+                    return True
+                current = out
+    return False
+
+
+def detect_wrapper_info(
+    entries: list[dict[str, Any]],
+    ops_raw: list,
+    allocators: dict[str, dict[str, Any] | None],
+    wrapper_db: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Detect if a function is a simple allocator wrapper.
+
+    A simple wrapper calls exactly one known allocator (or known wrapper),
+    has no stores, and passes a parameter through as the size argument
+    without arithmetic.
+
+    Returns a wrapper descriptor or None.
+    """
+    wrapper_db = wrapper_db or {}
+    known_entries = [
+        e
+        for e in entries
+        if e["callee"] is not None
+        and (e["callee"] in allocators or e["callee"] in wrapper_db)
+    ]
+    if len(known_entries) != 1:
+        return None
+
+    entry = known_entries[0]
+    if entry["stores"]:
+        return None
+    if not entry["returns"]["returned"] and not _alloc_reaches_return_register(
+        entry, ops_raw
+    ):
+        return None
+
+    callee_name = entry["callee"]
+    spec = allocators.get(callee_name)
+    if spec is None and callee_name in wrapper_db:
+        spec = wrapper_db[callee_name]["size_spec"]
+    if spec is None:
+        return None
+
+    params = _collect_param_varnodes(ops_raw)
+    if not params:
+        return None
+
+    inner_chain: list[str] = [callee_name]
+    if callee_name in wrapper_db:
+        inner_chain = [callee_name] + wrapper_db[callee_name]["chain"]
+
+    if "index" in spec:
+        size_vn_id = entry.get("size_vn")
+        if entry["size_expr"] == "const":
+            return {
+                "inner_allocator": callee_name,
+                "inner_spec": spec,
+                "size_spec": spec,
+                "chain": inner_chain,
+            }
+        if size_vn_id is None:
+            return None
+        size_idx = spec["index"]
+        call_op = _find_alloc_call_op(ops_raw, entry["call_seq"])
+        if call_op is None:
+            return None
+        call_inputs = op_inputs(call_op)
+        args = call_inputs[1:]
+        if size_idx >= len(args):
+            return None
+        origin = _trace_backward(args[size_idx])
+        pidx = _param_index_of(origin, params)
+        if pidx is None:
+            return None
+        return {
+            "inner_allocator": callee_name,
+            "inner_spec": spec,
+            "size_spec": {"index": pidx},
+            "chain": inner_chain,
+        }
+
+    if "product" in spec:
+        idx_a, idx_b = spec["product"]
+        call_op = _find_alloc_call_op(ops_raw, entry["call_seq"])
+        if call_op is None:
+            return None
+        call_inputs = op_inputs(call_op)
+        args = call_inputs[1:]
+        if idx_a >= len(args) or idx_b >= len(args):
+            return None
+        arg_a, arg_b = args[idx_a], args[idx_b]
+        origin_a = _trace_backward(arg_a)
+        origin_b = _trace_backward(arg_b)
+        a_const = origin_a.isConstant()
+        b_const = origin_b.isConstant()
+        pidx_a = None if a_const else _param_index_of(origin_a, params)
+        pidx_b = None if b_const else _param_index_of(origin_b, params)
+
+        if a_const and int(origin_a.getOffset()) == 1 and pidx_b is not None:
+            return {
+                "inner_allocator": callee_name,
+                "inner_spec": spec,
+                "size_spec": {"index": pidx_b},
+                "chain": inner_chain,
+            }
+        if b_const and int(origin_b.getOffset()) == 1 and pidx_a is not None:
+            return {
+                "inner_allocator": callee_name,
+                "inner_spec": spec,
+                "size_spec": {"index": pidx_a},
+                "chain": inner_chain,
+            }
+        if pidx_a is not None and pidx_b is not None:
+            return {
+                "inner_allocator": callee_name,
+                "inner_spec": spec,
+                "size_spec": {"product": [pidx_a, pidx_b]},
+                "chain": inner_chain,
+            }
+        if a_const and b_const:
+            return {
+                "inner_allocator": callee_name,
+                "inner_spec": spec,
+                "size_spec": spec,
+                "chain": inner_chain,
+            }
+        return None
+
+    return None
+
+
+def _find_alloc_call_op(ops_raw: list, call_seq: int):
+    """Find the CALL op at a given sequence number."""
+    for op in ops_raw:
+        try:
+            if op.getSeqnum().getTime() == call_seq:
+                return op
+        except Exception:  # noqa: BLE001, S110
+            pass
+    return None
+
+
+def _serialize_call_args(
+    call_inputs: list, namer: VarnodeNamer
+) -> list[dict[str, Any]]:
+    """Serialize CALL arguments (inputs[1:]) for the wrapper post-pass."""
+    args = call_inputs[1:]
+    result: list[dict[str, Any]] = []
+    for arg in args:
+        if arg.isConstant():
+            result.append({"const": int(arg.getOffset())})
+        else:
+            result.append({"vn": namer.id_for(arg)})
+    return result
+
+
+def resolve_wrappers(
+    entries: list[dict[str, Any]],
+    wrapper_db: dict[str, dict[str, Any]],
+    allocators: dict[str, dict[str, Any] | None],
+) -> list[dict[str, Any]]:
+    """Post-pass: resolve heuristic-matched entries through detected wrappers.
+
+    Modifies entries in place and returns them.  Strips transient ``_call_args``.
+    """
+    for entry in entries:
+        call_args = entry.pop("_call_args", None)
+        if entry.get("unwrapped_via") is not None:
+            continue
+        if entry["callee"] is None:
+            continue
+        if entry["callee"] in allocators:
+            continue
+        if call_args is None:
+            continue
+
+        chain: list[str] = []
+        current_callee = entry["callee"]
+        current_args = call_args
+        resolved = False
+
+        seen_callees: set[str] = set()
+        while current_callee not in seen_callees:
+            seen_callees.add(current_callee)
+            info = wrapper_db.get(current_callee)
+            if info is None:
+                break
+            chain.append(current_callee)
+            wrapper_spec = info["size_spec"]
+            inner_chain = info["chain"]
+
+            size_info = _resolve_call_args(current_args, wrapper_spec)
+            if size_info is not None and inner_chain:
+                final_allocator = inner_chain[-1]
+                if final_allocator in allocators:
+                    entry["size"] = size_info["size"]
+                    entry["size_expr"] = size_info["size_expr"]
+                    entry["size_vn"] = size_info["size_vn"]
+                    entry["unwrapped_via"] = " -> ".join(chain + inner_chain)
+                    resolved = True
+                    break
+                next_callee = inner_chain[0]
+                if next_callee in wrapper_db:
+                    next_args = _build_forwarded_args(current_args, wrapper_spec)
+                    if next_args is None:
+                        break
+                    current_callee = next_callee
+                    current_args = next_args
+                    continue
+            break
+
+        if not resolved:
+            entry.setdefault("unwrapped_via", None)
+
+    return entries
+
+
+def _resolve_call_args(
+    args: list[dict[str, Any]], spec: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Resolve size from serialized call arguments and a size spec."""
+    if "index" in spec:
+        idx = spec["index"]
+        if idx >= len(args):
+            return None
+        arg = args[idx]
+        if "const" in arg:
+            return {"size": arg["const"], "size_expr": "const", "size_vn": None}
+        return {"size": None, "size_expr": "variable", "size_vn": arg.get("vn")}
+
+    if "product" in spec:
+        idx_a, idx_b = spec["product"]
+        if idx_a >= len(args) or idx_b >= len(args):
+            return None
+        arg_a, arg_b = args[idx_a], args[idx_b]
+        if "const" in arg_a and "const" in arg_b:
+            return {
+                "size": arg_a["const"] * arg_b["const"],
+                "size_expr": "product",
+                "size_vn": None,
+            }
+        return {"size": None, "size_expr": "variable", "size_vn": None}
+
+    return None
+
+
+def _build_forwarded_args(
+    caller_args: list[dict[str, Any]], wrapper_spec: dict[str, Any]
+) -> list[dict[str, Any]] | None:
+    """Build the argument list for the next level of wrapper chain."""
+    if "index" in wrapper_spec:
+        idx = wrapper_spec["index"]
+        if idx >= len(caller_args):
+            return None
+        return [caller_args[idx]]
+    if "product" in wrapper_spec:
+        idx_a, idx_b = wrapper_spec["product"]
+        if idx_a >= len(caller_args) or idx_b >= len(caller_args):
+            return None
+        return [caller_args[idx_a], caller_args[idx_b]]
+    return None
+
+
+def build_wrapper_candidate(
+    entries: list[dict[str, Any]],
+    ops_raw: list,
+    allocators: dict[str, dict[str, Any] | None],
+) -> dict[str, Any] | None:
+    """Extract lightweight wrapper candidate data from a function's alloc entries.
+
+    Returns a candidate dict if the function might be a wrapper (has exactly one
+    call to a known allocator or heuristic match, no stores, and size traces to
+    a parameter).  The candidate carries all data needed for iterative detection
+    without live Ghidra objects.
+    """
+    if len(entries) != 1:
+        return None
+    entry = entries[0]
+    if entry["stores"]:
+        return None
+    callee = entry["callee"]
+    if callee is None:
+        return None
+
+    if not entry["returns"]["returned"] and not _alloc_reaches_return_register(
+        entry, ops_raw
+    ):
+        return None
+
+    params = _collect_param_varnodes(ops_raw)
+    if not params:
+        return None
+
+    call_op = _find_alloc_call_op(ops_raw, entry["call_seq"])
+    if call_op is None:
+        return None
+    call_inputs = op_inputs(call_op)
+    args = call_inputs[1:]
+
+    param_mapping: dict[int, int] = {}
+    for i, arg in enumerate(args):
+        origin = _trace_backward(arg)
+        if origin.isConstant():
+            continue
+        pidx = _param_index_of(origin, params)
+        if pidx is not None:
+            param_mapping[i] = pidx
+
+    const_args: dict[int, int] = {}
+    for i, arg in enumerate(args):
+        origin = _trace_backward(arg)
+        if origin.isConstant():
+            const_args[i] = int(origin.getOffset())
+
+    return {
+        "callee": callee,
+        "param_mapping": param_mapping,
+        "const_args": const_args,
+        "num_args": len(args),
+    }
+
+
+def detect_wrappers_from_candidates(
+    candidates: dict[str, dict[str, Any]],
+    allocators: dict[str, dict[str, Any] | None],
+) -> dict[str, dict[str, Any]]:
+    """Iteratively detect wrappers from candidate data until no new wrappers found.
+
+    Returns wrapper_db mapping function name to wrapper info.
+    """
+    wrapper_db: dict[str, dict[str, Any]] = {}
+
+    changed = True
+    while changed:
+        changed = False
+        for func_name, cand in candidates.items():
+            if func_name in wrapper_db:
+                continue
+            callee = cand["callee"]
+            spec: dict[str, Any] | None = None
+            chain_prefix: list[str] = []
+
+            if callee in allocators:
+                spec = allocators[callee]
+                chain_prefix = [callee]
+            elif callee in wrapper_db:
+                w = wrapper_db[callee]
+                spec = w["size_spec"]
+                chain_prefix = [callee] + w["chain"]
+            else:
+                continue
+
+            if spec is None:
+                continue
+
+            wrapper_spec = _derive_wrapper_spec(cand, spec)
+            if wrapper_spec is None:
+                continue
+
+            wrapper_db[func_name] = {
+                "inner_allocator": callee,
+                "inner_spec": spec,
+                "size_spec": wrapper_spec,
+                "chain": chain_prefix,
+            }
+            changed = True
+
+    return wrapper_db
+
+
+def _derive_wrapper_spec(
+    cand: dict[str, Any], inner_spec: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Derive the wrapper's size spec from its candidate data and inner spec."""
+    param_mapping = cand["param_mapping"]
+    const_args = cand["const_args"]
+
+    if "index" in inner_spec:
+        idx = inner_spec["index"]
+        if idx in param_mapping:
+            return {"index": param_mapping[idx]}
+        if idx in const_args:
+            return inner_spec
+        return None
+
+    if "product" in inner_spec:
+        idx_a, idx_b = inner_spec["product"]
+        a_param = param_mapping.get(idx_a)
+        b_param = param_mapping.get(idx_b)
+        a_const = const_args.get(idx_a)
+        b_const = const_args.get(idx_b)
+
+        if a_const == 1 and b_param is not None:
+            return {"index": b_param}
+        if b_const == 1 and a_param is not None:
+            return {"index": a_param}
+        if a_param is not None and b_param is not None:
+            return {"product": [a_param, b_param]}
+        if a_const is not None and b_const is not None:
+            return inner_spec
+        return None
+
+    return None
+
+
 def build_alloc_entries(
     high_function,
     func,
@@ -382,6 +913,12 @@ def build_alloc_entries(
         except Exception:  # noqa: BLE001, S110
             pass
 
+        # For heuristic-matched callees, stash serialized args so the
+        # wrapper post-pass can resolve the size without live Ghidra objects.
+        call_args: list[dict[str, Any]] | None = None
+        if is_allocator and callee_name not in allocators:
+            call_args = _serialize_call_args(inputs, namer)
+
         entry: dict[str, Any] = {
             "function": func_name,
             "function_addr": func_addr,
@@ -389,6 +926,7 @@ def build_alloc_entries(
             "callee_addr": callee_addr,
             "call_seq": call_seq,
             **size_info,
+            "unwrapped_via": None,
             "stores": stores,
             "returns": {
                 "output_vn": output_vn_id,
@@ -396,6 +934,8 @@ def build_alloc_entries(
                 "returned": returned,
             },
         }
+        if call_args is not None:
+            entry["_call_args"] = call_args
         entries.append(entry)
 
     return entries

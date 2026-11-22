@@ -22,7 +22,7 @@
 - [x] Make `all_functions.c` opt-in to avoid duplicate search results, disk use, and peak memory.
 - [x] Stream optional combined output instead of retaining every decompiled function in memory.
 - [x] Keep per-function artifacts independently readable so analysis does not require joining large global JSON files.
-- [ ] Add a local query command that resolves a function by name or address and returns its complete context packet.
+- [x] Add a local query command (`ghidra-decomp-query`) for reachable, endpoints, and paths queries against `callgraph.json` without Ghidra.
 
 ## Corpus enrichment
 
@@ -168,6 +168,21 @@ unset; ordered by impact.
   full pipeline (what we want for readable C); lighter styles (`normalize`,
   `firstpass`) trade quality for speed. Only worth it if speed ever dominates.
 
+### High-pcode export (complete)
+
+- [x] **`--pcode` flag.** Emits `<function>.pcode.json` per function: SSA high-pcode ops,
+  def-use edges, block CFG, varnode storage, and resolved call arguments. Schema version
+  bumped to 7. Large output; off by default. Designed for data-flow consumers (e.g.
+  overflow analysis via `sem-boundcheck`). Module: `pcode.py`. Spec: `HANDOFF_pcode_export.md`.
+
+### PDB symbol resolution (complete)
+
+- [x] **`--pdb auto|none|<path>` flag.** Controls PDB symbol loading for PE binaries.
+  `auto` extracts the CodeView RSDS record from the PE debug directory and fetches the
+  matching PDB from Microsoft's public symbol server with local cache. `none` suppresses
+  detection. A local path applies a PDB directly. Module: `pdb.py`. Integration-tested
+  with PE fixtures (`test_pdb_integration.py`) and unit-tested RSDS parsing (`test_pdb.py`).
+
 ### LLM-assisted enrichment (optional, not on by default)
 
 - [ ] **Semantic variable renaming.** Feed function context packets to an LLM for
@@ -208,7 +223,8 @@ Surveyed on 2026-08-15. All candidates use Ghidra's decompiler, so the useful di
 - [x] Add bounded parallel decompilation with one `DecompInterface` per worker and explicit per-function timeouts.
 - [~] ~~Reuse a fingerprinted persistent Ghidra project and support selective forced reanalysis.~~ Removed; each run uses a fresh project.
 - [x] Add function-name filters and resume only artifacts whose status and fingerprint are valid.
-- [x] Add optional GDT application before decompilation. Symbol-server/PDB lookup is still open.
+- [x] Add optional GDT application before decompilation.
+- [x] Add PDB symbol resolution (`--pdb auto|none|<path>`) with RSDS extraction and MS symbol server fetch.
 - [x] Add optional GZF export. BSim is still open; it needs a BSim database.
 - [x] Add optional Semgrep scanning with SARIF output after corpus generation.
 - [x] Benchmark threaded output against serial output for correctness and deterministic indexes. JVM memory use and wall-clock time on a large binary are still unmeasured.
@@ -253,14 +269,13 @@ Concrete features ghidrecomp ships that we lack, ordered by implementation effor
   project after export would let users re-run faster. Medium because the dot-path
   rejection needs a workaround.
 
-#### Larger effort
+- [x] **PDB symbol server integration.** Implemented as `--pdb auto|none|<path>`.
+  `auto` extracts the CodeView RSDS record from the PE and fetches the PDB from
+  Microsoft's public symbol server with local cache. Unit-tested (RSDS parsing) and
+  integration-tested (PE fixtures). Covers the core use case; additional remote servers
+  (Chrome, Mozilla, Intel, NVIDIA, AMD) can be added later.
 
-- [ ] **PDB symbol server integration.** Auto-configure Ghidra's local symbol store,
-  register well-known remote servers (MS, Chrome, Mozilla, Intel, NVIDIA, AMD),
-  enable remote PDB download during analysis. Flags: `--sym-file-path` (local PDB),
-  `--symbols-path` (local store), `--skip-symbols`. This is the biggest practical
-  gap for Windows RE work. Larger because it touches Ghidra's `PdbPlugin` and symbol
-  server API, needs Windows PE test fixtures, and has network-dependent behavior.
+#### Larger effort
 
 - [ ] **Function similarity hashing (replaces BSim for offline use).** Normalized
   mnemonic-sequence hash per function (already in corpus enrichment above). Combined

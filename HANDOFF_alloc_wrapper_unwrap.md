@@ -98,22 +98,21 @@ The `size_vn` now points to the caller's varnode for the wrapper's size argument
 
 ### Depth limit
 
-Unwrap at most 2 levels (wrapper calls wrapper calls `malloc`). `opt_malloc` in
-dnsmasq is a 2-level example:
+Superseded during implementation: unwrap depth is uncapped, with cycle
+protection (a wrapper chain that revisits a callee stops; unit-tested with a
+5-level chain and a cyclic chain). The original 2-level cap was dropped
+because bounded depth bought no safety the cycle check doesn't already
+provide.
 
-```c
-void opt_malloc(void) {
-    if (!mem_recover) {
-        safe_malloc();      // safe_malloc -> calloc
-        return;
-    }
-    whine_malloc();         // whine_malloc -> calloc
-    ...
-}
-```
+### Multi-path wrappers (opt_malloc shape)
 
-Both paths go through a wrapper to `calloc`. The unwrap should follow:
-`opt_malloc -> safe_malloc -> calloc` (depth 2).
+A function with several allocator call sites is still a simple wrapper when
+every site is store-free, returns its result, and derives the *same* size
+spec (same param index, or same product pair). dnsmasq's `opt_malloc`
+(`mem_recover ? whine_malloc(n) : safe_malloc(n)`) is the motivating shape.
+Still rejected: arithmetic fallbacks (`tricky_alloc`: `malloc(n / 2)`) and
+disagreeing size params (`pick_alloc(n, m)`). Bounded at 4 allocator sites
+per wrapper.
 
 ### Product-sink wrappers (calloc-style)
 
@@ -362,3 +361,44 @@ void use_calloc(void) {
    size args remain unchanged).
 7. Performance: wrapper analysis is per-function, bounded by function count. Should add
    negligible time on top of the existing `--alloc-map` pass.
+
+## Implementation status (complete)
+
+Implemented on branch `feature/alloc-wrapper-unwrap`. Deviations from the
+spec above, all deliberate:
+
+- Depth is uncapped with cycle protection (see above), not capped at 2.
+- Multi-path wrappers are accepted (see above).
+- The 7 fixture programs live in one `tests/fixtures/alloc_wrapper.c` compiled
+  by the Docker crossbuild for 6 architectures, not 7 separate files.
+
+## Verification against dnsmasq v2.77 (CVE-2017-14491 binary)
+
+`ghidra-decomp <dnsmasq> --alloc-map`: 349 entries (matches the baseline
+count), 169 unwrapped (`safe_malloc -> calloc` 103, `whine_malloc -> calloc`
+66), concrete sizes 120 vs 1 before. `rehash`'s entry reproduces the example
+shape exactly (`size: 512, size_expr: "const"`).
+
+Known misses, both Ghidra-side, not wrapper-detection defects:
+
+1. **84 sites stay `unknown`:** dnsmasq's `opt_malloc` macro expands to
+   `mem_recover ? whine_malloc(n) : safe_malloc(n)`; on the `whine` branch
+   the longjmp recovery path breaks the decompiler's dataflow, so the CALL op
+   carries no size-argument varnode at all. There is nothing to resolve.
+   `--aggressive` (Decompiler Parameter ID) is NOT a workaround: it commits
+   14-parameter signatures and forwards whole register blobs, collapsing
+   concrete sizes 120 -> 9 (8 of them invented `size: 0`). Default analysis is
+   the right mode.
+2. **`opt_malloc` itself is not detected in this binary:** Ghidra recovers it
+   as `void opt_malloc(void)` — no parameters, no return value — so the
+   return-reaches-RETURN check fails. Its 4 caller sites (constants 128/56/
+   128) therefore stay `unknown`. The shape itself is supported and e2e-tested
+   (`two_path_alloc` fixture, x86-32 + mipsel); well-formed pcode unwraps.
+
+Consumer note (binprobe, CVE-2017-14491 refind): the reply buffer allocation
+is visible — `main`'s `daemon->packet = safe_malloc(edns_pktsz)` is a field
+store with `size_expr: "variable"` and chain `safe_malloc -> calloc`. The
+xfail reason in `cve.toml` (caller-supplied destination, interprocedural
+capacity linking) remains binprobe-side work; the allocation facts it needs
+are now in `alloc_map.json`.
+

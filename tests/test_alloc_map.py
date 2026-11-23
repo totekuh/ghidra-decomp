@@ -918,11 +918,12 @@ def test_two_path_wrapper_detected():
     malloc_target = _callee_addr("malloc", "00406230")
     out1 = FakeVarnode(0x200)
     call1 = FakeOp("CALL", out1, [calloc_target, const(1), param_n])
-    ret1 = FakeOp("RETURN", None, [const(0), out1])
     out2 = FakeVarnode(0x300)
     call2 = FakeOp("CALL", out2, [malloc_target, param_n])
-    ret2 = FakeOp("RETURN", None, [const(0), out2])
-    ops = [call1, ret1, call2, ret2]
+    merged = FakeVarnode(0x400)
+    phi = FakeOp("MULTIEQUAL", merged, [out1, out2])
+    ret = FakeOp("RETURN", None, [const(0), merged])
+    ops = [call1, call2, phi, ret]
 
     hf = fake_high_function(ops)
     func = fake_func(name="two_path_alloc")

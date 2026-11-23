@@ -227,6 +227,40 @@ def _classify_store(
                 "store_vn": store_vn_id,
             }
 
+    # PTRSUB: Ghidra 12.x struct field access — PTRSUB(base, byte_offset)
+    if defop is not None and str(defop.getMnemonic()) == "PTRSUB":
+        ptrsub_inputs = op_inputs(defop)
+        if len(ptrsub_inputs) >= 2:
+            base_vn = ptrsub_inputs[0]
+            offset_vn = ptrsub_inputs[1]
+
+            field_offset = None
+            if offset_vn.isConstant():
+                field_offset = int(offset_vn.getOffset())
+
+            base_type = None
+            field_name = None
+            try:
+                high = base_vn.getHigh()
+                if high is not None:
+                    dt = high.getDataType()
+                    if dt is not None:
+                        type_name = dt.getName()
+                        if type_name.endswith("*"):
+                            type_name = type_name[:-1].rstrip()
+                        base_type = type_name
+            except Exception:  # noqa: BLE001, S110
+                pass
+
+            return {
+                "kind": "field",
+                "base_type": base_type,
+                "field_offset": field_offset,
+                "field_name": field_name,
+                "store_seq": store_seq,
+                "store_vn": store_vn_id,
+            }
+
     # Ram-space address → global store
     if space_name(addr_vn) == "ram":
         global_addr = None
@@ -238,6 +272,17 @@ def _classify_store(
             "kind": "global",
             "base_type": None,
             "field_offset": global_addr,
+            "field_name": None,
+            "store_seq": store_seq,
+            "store_vn": store_vn_id,
+        }
+
+    # Constant address (no defining op) → global store
+    if addr_vn.isConstant():
+        return {
+            "kind": "global",
+            "base_type": None,
+            "field_offset": int(addr_vn.getOffset()),
             "field_name": None,
             "store_seq": store_seq,
             "store_vn": store_vn_id,
@@ -264,6 +309,7 @@ _FORWARDING_OPS = frozenset(
         "PTRADD",
         "PTRSUB",
         "INT_ADD",
+        "MULTIEQUAL",
     }
 )
 
@@ -278,66 +324,99 @@ def _follow_output(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
     """Follow an allocation output forward through the function's pcode.
 
-    Returns (stores, passed_to, returned).
+    Returns (stores, passed_to, returned).  Uses a fixpoint loop because
+    Ghidra's high-pcode seq order does not guarantee def-before-use
+    (MULTIEQUAL outputs can precede their consuming COPYs).
     """
     output_id = namer.id_for(alloc_output_vn)
     traced_ids: set[str] = {output_id}
     stores: list[dict[str, Any]] = []
     passed_to: list[dict[str, Any]] = []
     returned = False
+    handled_seqs: set[int] = set()
 
-    for seq, op in enumerate(ops_raw):
-        if seq <= start_seq:
-            continue
-        mnemonic = str(op.getMnemonic())
-        inputs = op_inputs(op)
+    changed = True
+    while changed:
+        changed = False
+        for seq, op in enumerate(ops_raw):
+            if seq <= start_seq or seq in handled_seqs:
+                continue
+            mnemonic = str(op.getMnemonic())
+            inputs = op_inputs(op)
 
-        input_matches: list[tuple[int, Any]] = []
-        for i, inp in enumerate(inputs):
-            if inp is not None and not inp.isConstant():
-                try:
-                    if namer.id_for(inp) in traced_ids:
-                        input_matches.append((i, inp))
-                except Exception:  # noqa: BLE001, S110
-                    pass
+            input_matches: list[tuple[int, Any]] = []
+            for i, inp in enumerate(inputs):
+                if inp is not None and not inp.isConstant():
+                    try:
+                        if namer.id_for(inp) in traced_ids:
+                            input_matches.append((i, inp))
+                    except Exception:  # noqa: BLE001, S110
+                        pass
 
-        if not input_matches:
-            continue
+            if not input_matches:
+                continue
 
-        if mnemonic in _FORWARDING_OPS:
-            out = op.getOutput()
-            if out is not None:
-                traced_ids.add(namer.id_for(out))
-        elif mnemonic == "STORE":
-            store = _classify_store(op, input_matches[0][0], namer, program)
-            if store is not None:
-                stores.append(store)
-        elif mnemonic in CALL_OPS:
-            for i, _inp in input_matches:
-                arg_index = i - 1
-                if arg_index < 0:
-                    continue
-                callee_name, callee_addr = _resolve_callee(op, program, fm)
-                call_seq = -1
-                try:
-                    call_seq = op.getSeqnum().getTime()
-                except Exception:  # noqa: BLE001, S110
-                    pass
-                passed_to.append(
-                    {
-                        "callee": callee_name,
-                        "callee_addr": callee_addr,
-                        "call_seq": call_seq,
-                        "arg_index": arg_index,
-                    }
-                )
-        elif mnemonic == "RETURN":
-            returned = True
+            handled_seqs.add(seq)
+            if mnemonic in _FORWARDING_OPS:
+                out = op.getOutput()
+                if out is not None:
+                    new_id = namer.id_for(out)
+                    if new_id not in traced_ids:
+                        traced_ids.add(new_id)
+                        changed = True
+                    if mnemonic == "COPY" and space_name(out) == "ram":
+                        global_addr = None
+                        try:
+                            global_addr = int(out.getOffset())
+                        except Exception:  # noqa: BLE001, S110
+                            pass
+                        store_seq = -1
+                        try:
+                            store_seq = op.getSeqnum().getTime()
+                        except Exception:  # noqa: BLE001, S110
+                            pass
+                        stores.append(
+                            {
+                                "kind": "global",
+                                "base_type": None,
+                                "field_offset": global_addr,
+                                "field_name": None,
+                                "store_seq": store_seq,
+                                "store_vn": namer.id_for(out),
+                            }
+                        )
+            elif mnemonic == "STORE":
+                store = _classify_store(op, input_matches[0][0], namer, program)
+                if store is not None:
+                    stores.append(store)
+            elif mnemonic in CALL_OPS:
+                for i, _inp in input_matches:
+                    arg_index = i - 1
+                    if arg_index < 0:
+                        continue
+                    callee_name, callee_addr = _resolve_callee(op, program, fm)
+                    call_seq = -1
+                    try:
+                        call_seq = op.getSeqnum().getTime()
+                    except Exception:  # noqa: BLE001, S110
+                        pass
+                    passed_to.append(
+                        {
+                            "callee": callee_name,
+                            "callee_addr": callee_addr,
+                            "call_seq": call_seq,
+                            "arg_index": arg_index,
+                        }
+                    )
+            elif mnemonic == "RETURN":
+                returned = True
 
     return stores, passed_to, returned
 
 
-_PASSTHROUGH_OPS = frozenset({"COPY", "CAST", "INT_ZEXT", "INT_SEXT", "SUBPIECE"})
+_PASSTHROUGH_OPS = frozenset(
+    {"COPY", "CAST", "INT_ZEXT", "INT_SEXT", "SUBPIECE", "MULTIEQUAL"}
+)
 
 
 def _trace_backward(varnode):  # type: ignore[no-untyped-def]
@@ -856,6 +935,12 @@ def build_alloc_entries(
                 "returned": returned,
             },
         }
+        if (
+            not returned
+            and output_vn is not None
+            and _alloc_reaches_return_register(entry, ops_raw)
+        ):
+            entry["returns"]["returned"] = True
         if call_args is not None:
             entry["_call_args"] = call_args
         entries.append(entry)

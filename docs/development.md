@@ -16,12 +16,13 @@ ruff check src/ tests/
 ruff format --check src/ tests/
 mypy src/ghidra_decomp/ --ignore-missing-imports
 pytest tests/test_artifacts.py tests/test_decompiler_helpers.py \
-       tests/test_filters.py tests/test_parallel.py tests/test_pcode.py
+       tests/test_filters.py tests/test_parallel.py tests/test_pcode.py \
+       tests/test_alloc_map.py
 pytest tests/test_multiarch_e2e.py::test_checked_in_fixture_hashes_and_provenance
 ```
 
-`tests/test_pcode.py` drives the high-pcode serializer with fakes, so it needs neither
-Ghidra nor Docker.
+`tests/test_pcode.py` and `tests/test_alloc_map.py` drive their respective modules
+with fakes, so they need neither Ghidra nor Docker.
 
 CI installs the project and pytest before running these fast unit/CLI tests and the
 checked-in fixture checksum/provenance validation. It does not start embedded Ghidra.
@@ -39,6 +40,17 @@ GHIDRA_INSTALL_DIR=/path/to/ghidra pytest tests/
 The system-binary integration test verifies manifest and artifact hashes, sidecars,
 addressed assembly bytes, call-site-aware xrefs, storage metadata, stack frames, and
 combined output. It skips when the host does not provide `true` or a Ghidra install.
+
+A `make e2e` target runs the full end-to-end suite including alloc-map tests.
+
+### `--alloc-map` end-to-end (`tests/test_alloc_map_e2e.py`)
+
+The alloc-map e2e tests cross-compile `alloc_basic.c`, `alloc_xfunc.c`,
+`alloc_complex.c`, `alloc_complex2.c`, and `alloc_wrapper.c` via Docker
+(`Dockerfile.crossbuild`) for 6 architectures, then run `--alloc-map` and verify
+entry shapes: constant/variable/product sizes, struct field stores, cross-function
+pointer flow, wrapper unwrapping chains, multi-path wrappers, and negative cases
+(arithmetic on size, disagreeing params). Tests skip when Docker is unavailable.
 
 ### `--pcode` end-to-end (`tests/test_pcode_e2e.py`)
 

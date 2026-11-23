@@ -32,6 +32,9 @@ ghidra-decomp ./firmware.bin -o ./firmware_decomp
 | `--timeout` | Per-function decompilation timeout (seconds) | 60 |
 | `--combined` | Also emit `all_functions.c` | off |
 | `--pcode` | Also emit `<function>.pcode.json` per function: SSA high-pcode ops, def-use, block CFG, varnode storage, and resolved call arguments | off |
+| `--alloc-map` | Emit `alloc_map.json` recording every allocation call site, where the result pointer is stored, and how it flows forward. Detects allocator wrappers and resolves sizes through wrapper chains. Implies `--pcode`. | off |
+| `--alloc-map-config` | JSON file extending the built-in allocator list for `--alloc-map` | none |
+| `--version` | Print version and exit | |
 | `--ghidra-path` | Path to Ghidra install | `$GHIDRA_INSTALL_DIR` |
 | `--base-addr` | Rebase binary to this address before analysis | none |
 | `--entry` | Mark address as entry point before analysis | none |
@@ -86,6 +89,7 @@ firmware_decomp/
 ├── all_functions.c     # --combined
 ├── program.gzf         # --gzf
 ├── semgrep.sarif       # --semgrep-config
+├── alloc_map.json      # --alloc-map
 ├── types.json
 ├── functions.json
 ├── callgraph.json

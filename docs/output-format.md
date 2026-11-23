@@ -97,6 +97,69 @@ A function with no high function (a thunk, or a decompiler error) is skipped;
 when a record is written for it, it carries `{"function", "error"}` instead of
 the envelope, mirroring `decompilation.status`.
 
+## Allocation map (`--alloc-map`)
+
+With `--alloc-map`, the export produces `alloc_map.json` recording every allocation
+call site in the binary — where the result pointer is stored, how it flows forward,
+and the resolved size. The flag implies `--pcode`.
+
+The map knows 35+ built-in allocators (libc `malloc`/`calloc`/`realloc`/`strdup` and
+Linux kernel `kmalloc`/`kzalloc`/`kcalloc`/`vmalloc`/`devm_kmalloc`/etc.), plus a
+fallback heuristic for functions whose name contains "alloc". Extend the list with
+`--alloc-map-config` pointing to a JSON file that maps function names to size-argument
+specs.
+
+```json
+{
+  "schema_version": 1,
+  "binary": "dnsmasq",
+  "functions_analyzed": 349,
+  "entries": [
+    {
+      "function": "rehash",
+      "entry": "00112200",
+      "callee": "safe_malloc",
+      "callee_addr": "00110640",
+      "size": 512,
+      "size_expr": "const",
+      "size_vn": null,
+      "unwrapped_via": "safe_malloc -> calloc",
+      "stores": [
+        {
+          "kind": "field",
+          "base_vn": "v12",
+          "field_offset": 8,
+          "store_vn": "v7",
+          "seq": 42
+        }
+      ],
+      "forwarded_to": ["process_reply"]
+    }
+  ]
+}
+```
+
+- **`size_expr`** — `"const"` (literal), `"variable"` (runtime), `"product"`
+  (two-arg product, e.g. calloc), or `"unknown"` (implicit/unresolvable).
+- **`size_vn`** — when `size_expr` is `"variable"`, the varnode id in this
+  function's pcode that holds the size, for backward slicing.
+- **`stores`** — where the allocation result pointer is written: `"field"` (struct
+  field at a fixed offset), `"global"` (known address), or `"array"` (indexed store).
+- **`forwarded_to`** — functions the result pointer is passed to as an argument.
+
+### Allocator wrapper unwrapping
+
+When a call targets a function that is not in the known allocator list but is a
+simple wrapper — it calls exactly one known allocator, returns the result, and passes
+a parameter as the size without arithmetic — the alloc map resolves the size through
+the wrapper chain. `unwrapped_via` documents the chain
+(`"safe_malloc -> calloc"`, `"opt_malloc -> safe_malloc -> calloc"`); it is `null`
+for direct allocator calls.
+
+Multi-path wrappers are supported: a function with up to 4 allocator call sites
+qualifies when every site is store-free, returns its result, and derives the same
+size spec. Unwrap depth is uncapped with cycle protection.
+
 ## Type records
 
 Every type record says where it came from, how it is laid out, and who uses it, so a

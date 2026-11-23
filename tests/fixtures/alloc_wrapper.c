@@ -55,6 +55,28 @@ __attribute__((noinline)) void *opt_malloc(size_t n) {
     return safe_malloc(n);
 }
 
+/* Logged wrapper: second calloc-based leaf, same size param as safe_malloc */
+__attribute__((noinline)) void *logged_malloc(size_t n) {
+    void *p = calloc(1, n);
+    if (!p) fake_abort();
+    return p;
+}
+
+/* Multi-path wrapper: two store-free allocator calls with the same size
+ * param (dnsmasq opt_malloc shape: mem_recover picks the branch) */
+static volatile unsigned g_pick;
+
+__attribute__((noinline)) void *two_path_alloc(size_t n) {
+    if (g_pick) return safe_malloc(n);
+    return logged_malloc(n);
+}
+
+/* NOT a wrapper: two allocs with different size params */
+__attribute__((noinline)) void *pick_alloc(size_t n, size_t m) {
+    if (g_pick) return malloc(n);
+    return malloc(m);
+}
+
 /* 5-level deep chain: w1 -> w2 -> w3 -> w4 -> w5 -> malloc */
 __attribute__((noinline)) void *w5_alloc(size_t n) { return malloc(n); }
 __attribute__((noinline)) void *w4_alloc(size_t n) { return w5_alloc(n); }
@@ -142,6 +164,20 @@ __attribute__((noinline)) void use_header(void) {
     g_sink = (unsigned)(size_t)buf;
 }
 
+/* Fixture 9: multi-path wrapper (two allocator calls, same size param) */
+__attribute__((noinline)) void use_two_path(void) {
+    char *buf = two_path_alloc(200);
+    buf[0] = 'p';
+    g_sink = (unsigned)(size_t)buf;
+}
+
+/* Fixture 10: NOT a wrapper — different size params on the two paths */
+__attribute__((noinline)) void use_pick(void) {
+    char *buf = pick_alloc(7, 9);
+    buf[0] = 'q';
+    g_sink = (unsigned)(size_t)buf;
+}
+
 /* Fixture 8: 5-level deep wrapper chain */
 __attribute__((noinline)) void use_deep(void) {
     char *buf = w1_alloc(77);
@@ -160,5 +196,7 @@ void entry(void) {
     use_tricky();
     use_header();
     use_deep();
+    use_two_path();
+    use_pick();
     g_sink = (unsigned)(size_t)c.buf;
 }

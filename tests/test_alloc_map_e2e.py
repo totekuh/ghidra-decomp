@@ -484,6 +484,22 @@ class TestAllocWrapper:
         if header:
             assert header[0]["unwrapped_via"] is None
 
+    def test_two_path_wrapper(self):
+        """Branch around two wrappers with the same size param unwraps (opt_malloc shape)."""
+        entries = _entries_for(self.output, "use_two_path")
+        assert len(entries) >= 1
+        e = next(e for e in entries if e["callee"] == "two_path_alloc")
+        assert e["size"] == 200
+        assert e["size_expr"] == "const"
+        assert e["unwrapped_via"] == "two_path_alloc -> safe_malloc -> calloc"
+
+    def test_not_wrapper_different_size_params(self):
+        """Two allocs with different size params stays unwrapped_via=None."""
+        entries = _entries_for(self.output, "use_pick")
+        picks = [e for e in entries if e["callee"] == "pick_alloc"]
+        assert picks, "pick_alloc entry missing"
+        assert picks[0]["unwrapped_via"] is None
+
     def test_deep_5_level_chain(self):
         entries = _entries_for(self.output, "use_deep")
         assert len(entries) >= 1

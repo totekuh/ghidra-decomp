@@ -890,32 +890,199 @@ def test_detect_wrapper_copy_chain():
     assert wrapper["size_spec"] == {"index": 0}
 
 
-def test_not_wrapper_multiple_allocs():
-    """Two malloc calls → not a wrapper."""
-    param_n = FakeVarnode(0x100, space="register")
-    malloc_target = _callee_addr("malloc", "00406230")
-    out1 = FakeVarnode(0x200)
-    call1 = FakeOp("CALL", out1, [malloc_target, param_n])
-    out2 = FakeVarnode(0x300)
-    call2 = FakeOp("CALL", out2, [malloc_target, param_n])
-    ret = FakeOp("RETURN", None, [const(0), out1])
-
-    hf = fake_high_function([call1, call2, ret])
-    func = fake_func(name="tricky_alloc")
-    program = _program_with_function("malloc", "00406230")
+def _namer_for(ops):
     namer = VarnodeNamer()
-    for op in [call1, call2, ret]:
+    for op in ops:
         out = op.getOutput()
         if out is not None and not out.isConstant():
             namer.id_for(out)
         for inp in op.getInputs():
             if inp is not None and not inp.isConstant():
                 namer.id_for(inp)
-    entries = build_alloc_entries(
-        hf, func, program, namer, DEFAULT_ALLOCATORS, [call1, call2, ret]
+    return namer
+
+
+def _multi_program():
+    return fake_program(
+        functions={
+            "00406230": SimpleNamespace(getName=lambda: "malloc"),
+            "00406240": SimpleNamespace(getName=lambda: "calloc"),
+        }
     )
-    cand = build_wrapper_candidate(entries, [call1, call2, ret], DEFAULT_ALLOCATORS)
-    assert cand is None
+
+
+def test_two_path_wrapper_detected():
+    """Branch around two wrappers with the same size param → wrapper (opt_malloc shape)."""
+    param_n = FakeVarnode(0x100, space="register")
+    calloc_target = _callee_addr("calloc", "00406240")
+    malloc_target = _callee_addr("malloc", "00406230")
+    out1 = FakeVarnode(0x200)
+    call1 = FakeOp("CALL", out1, [calloc_target, const(1), param_n])
+    ret1 = FakeOp("RETURN", None, [const(0), out1])
+    out2 = FakeVarnode(0x300)
+    call2 = FakeOp("CALL", out2, [malloc_target, param_n])
+    ret2 = FakeOp("RETURN", None, [const(0), out2])
+    ops = [call1, ret1, call2, ret2]
+
+    hf = fake_high_function(ops)
+    func = fake_func(name="two_path_alloc")
+    program = _multi_program()
+    namer = _namer_for(ops)
+    entries = build_alloc_entries(hf, func, program, namer, DEFAULT_ALLOCATORS, ops)
+    cand = build_wrapper_candidate(entries, ops, DEFAULT_ALLOCATORS)
+    assert cand is not None
+    assert len(cand["calls"]) == 2
+
+    db = detect_wrappers_from_candidates({"two_path_alloc": cand}, DEFAULT_ALLOCATORS)
+    w = db["two_path_alloc"]
+    assert w["size_spec"] == {"index": 0}
+    assert w["chain"][0] == "calloc"
+    assert w["chain"][-1] == "calloc"
+
+
+def test_same_size_fallback_is_wrapper():
+    """Two same-allocator calls with the same size param → wrapper (sizes match)."""
+    param_n = FakeVarnode(0x100, space="register")
+    malloc_target = _callee_addr("malloc", "00406230")
+    out1 = FakeVarnode(0x200)
+    call1 = FakeOp("CALL", out1, [malloc_target, param_n])
+    ret1 = FakeOp("RETURN", None, [const(0), out1])
+    out2 = FakeVarnode(0x300)
+    call2 = FakeOp("CALL", out2, [malloc_target, param_n])
+    ret2 = FakeOp("RETURN", None, [const(0), out2])
+    ops = [call1, ret1, call2, ret2]
+
+    hf = fake_high_function(ops)
+    func = fake_func(name="fallback_alloc")
+    program = _program_with_function("malloc", "00406230")
+    namer = _namer_for(ops)
+    entries = build_alloc_entries(hf, func, program, namer, DEFAULT_ALLOCATORS, ops)
+    cand = build_wrapper_candidate(entries, ops, DEFAULT_ALLOCATORS)
+    assert cand is not None
+
+    db = detect_wrappers_from_candidates({"fallback_alloc": cand}, DEFAULT_ALLOCATORS)
+    assert db["fallback_alloc"]["size_spec"] == {"index": 0}
+
+
+def test_not_wrapper_fallback_arithmetic():
+    """Second call sizes with arithmetic (n/2) → rejected (tricky_alloc shape)."""
+    param_n = FakeVarnode(0x100, space="register")
+    malloc_target = _callee_addr("malloc", "00406230")
+    out1 = FakeVarnode(0x200)
+    call1 = FakeOp("CALL", out1, [malloc_target, param_n])
+    ret1 = FakeOp("RETURN", None, [const(0), out1])
+    n_half = FakeVarnode(0x400)
+    div = FakeOp("INT_DIV", n_half, [param_n, const(2)])
+    out2 = FakeVarnode(0x300)
+    call2 = FakeOp("CALL", out2, [malloc_target, n_half])
+    ret2 = FakeOp("RETURN", None, [const(0), out2])
+    ops = [call1, ret1, div, call2, ret2]
+
+    hf = fake_high_function(ops)
+    func = fake_func(name="tricky_alloc")
+    program = _program_with_function("malloc", "00406230")
+    namer = _namer_for(ops)
+    entries = build_alloc_entries(hf, func, program, namer, DEFAULT_ALLOCATORS, ops)
+    cand = build_wrapper_candidate(entries, ops, DEFAULT_ALLOCATORS)
+    db = detect_wrappers_from_candidates({"tricky_alloc": cand}, DEFAULT_ALLOCATORS)
+    assert "tricky_alloc" not in db
+
+
+def test_not_wrapper_different_size_params():
+    """Two calls with different size params → rejected (sizes disagree)."""
+    param_n = FakeVarnode(0x100, space="register")
+    param_m = FakeVarnode(0x110, space="register")
+    malloc_target = _callee_addr("malloc", "00406230")
+    out1 = FakeVarnode(0x200)
+    call1 = FakeOp("CALL", out1, [malloc_target, param_n])
+    ret1 = FakeOp("RETURN", None, [const(0), out1])
+    out2 = FakeVarnode(0x300)
+    call2 = FakeOp("CALL", out2, [malloc_target, param_m])
+    ret2 = FakeOp("RETURN", None, [const(0), out2])
+    ops = [call1, ret1, call2, ret2]
+
+    hf = fake_high_function(ops)
+    func = fake_func(name="pick_alloc")
+    program = _program_with_function("malloc", "00406230")
+    namer = _namer_for(ops)
+    entries = build_alloc_entries(hf, func, program, namer, DEFAULT_ALLOCATORS, ops)
+    cand = build_wrapper_candidate(entries, ops, DEFAULT_ALLOCATORS)
+    db = detect_wrappers_from_candidates({"pick_alloc": cand}, DEFAULT_ALLOCATORS)
+    assert "pick_alloc" not in db
+
+
+def test_two_path_wrapper_resolves_call_site():
+    """End to end: wrapper_db from a two-path wrapper resolves a caller's site."""
+    # Inner wrappers: safe_malloc -> calloc, logged_malloc -> malloc
+    param_n = FakeVarnode(0x100, space="register")
+    calloc_target = _callee_addr("calloc", "00406240")
+    malloc_target = _callee_addr("malloc", "00406230")
+
+    safe_out = FakeVarnode(0x200)
+    safe_call = FakeOp("CALL", safe_out, [calloc_target, const(1), param_n])
+    safe_ret = FakeOp("RETURN", None, [const(0), safe_out])
+    logged_out = FakeVarnode(0x300)
+    logged_call = FakeOp("CALL", logged_out, [malloc_target, param_n])
+    logged_ret = FakeOp("RETURN", None, [const(0), logged_out])
+
+    two_out = FakeVarnode(0x400)
+    two_call1 = FakeOp(
+        "CALL", two_out, [_callee_addr("safe_malloc", "00408001"), param_n]
+    )
+    two_ret1 = FakeOp("RETURN", None, [const(0), two_out])
+    two_out2 = FakeVarnode(0x401)
+    two_call2 = FakeOp(
+        "CALL", two_out2, [_callee_addr("logged_malloc", "00408002"), param_n]
+    )
+    two_ret2 = FakeOp("RETURN", None, [const(0), two_out2])
+
+    caller_out = FakeVarnode(0x500)
+    caller_call = FakeOp(
+        "CALL", caller_out, [_callee_addr("two_path_alloc", "00408003"), const(200)]
+    )
+
+    program = fake_program(
+        functions={
+            "00406230": SimpleNamespace(getName=lambda: "malloc"),
+            "00406240": SimpleNamespace(getName=lambda: "calloc"),
+            "00408001": SimpleNamespace(getName=lambda: "safe_malloc"),
+            "00408002": SimpleNamespace(getName=lambda: "logged_malloc"),
+            "00408003": SimpleNamespace(getName=lambda: "two_path_alloc"),
+        }
+    )
+
+    candidates = {}
+    for name, ops in (
+        ("safe_malloc", [safe_call, safe_ret]),
+        ("logged_malloc", [logged_call, logged_ret]),
+        ("two_path_alloc", [two_call1, two_ret1, two_call2, two_ret2]),
+    ):
+        hf = fake_high_function(ops)
+        func = fake_func(name=name)
+        namer = _namer_for(ops)
+        entries = build_alloc_entries(hf, func, program, namer, DEFAULT_ALLOCATORS, ops)
+        cand = build_wrapper_candidate(entries, ops, DEFAULT_ALLOCATORS)
+        if cand is not None:
+            candidates[name] = cand
+
+    db = detect_wrappers_from_candidates(candidates, DEFAULT_ALLOCATORS)
+    assert "safe_malloc" in db
+    assert "logged_malloc" in db
+    assert "two_path_alloc" in db
+
+    # Caller: two_path_alloc(200)
+    hf = fake_high_function([caller_call])
+    func = fake_func(name="use_two_path")
+    namer = _namer_for([caller_call])
+    entries = build_alloc_entries(
+        hf, func, program, namer, DEFAULT_ALLOCATORS, [caller_call]
+    )
+    entries = resolve_wrappers(entries, db, DEFAULT_ALLOCATORS)
+    e = entries[0]
+    assert e["callee"] == "two_path_alloc"
+    assert e["size"] == 200
+    assert e["size_expr"] == "const"
+    assert e["unwrapped_via"] == "two_path_alloc -> safe_malloc -> calloc"
 
 
 def test_not_wrapper_no_return():

@@ -450,133 +450,6 @@ def _alloc_reaches_return_register(entry: dict[str, Any], ops_raw: list) -> bool
     return False
 
 
-def detect_wrapper_info(
-    entries: list[dict[str, Any]],
-    ops_raw: list,
-    allocators: dict[str, dict[str, Any] | None],
-    wrapper_db: dict[str, dict[str, Any]] | None = None,
-) -> dict[str, Any] | None:
-    """Detect if a function is a simple allocator wrapper.
-
-    A simple wrapper calls exactly one known allocator (or known wrapper),
-    has no stores, and passes a parameter through as the size argument
-    without arithmetic.
-
-    Returns a wrapper descriptor or None.
-    """
-    wrapper_db = wrapper_db or {}
-    known_entries = [
-        e
-        for e in entries
-        if e["callee"] is not None
-        and (e["callee"] in allocators or e["callee"] in wrapper_db)
-    ]
-    if len(known_entries) != 1:
-        return None
-
-    entry = known_entries[0]
-    if entry["stores"]:
-        return None
-    if not entry["returns"]["returned"] and not _alloc_reaches_return_register(
-        entry, ops_raw
-    ):
-        return None
-
-    callee_name = entry["callee"]
-    spec = allocators.get(callee_name)
-    if spec is None and callee_name in wrapper_db:
-        spec = wrapper_db[callee_name]["size_spec"]
-    if spec is None:
-        return None
-
-    params = _collect_param_varnodes(ops_raw)
-    if not params:
-        return None
-
-    inner_chain: list[str] = [callee_name]
-    if callee_name in wrapper_db:
-        inner_chain = [callee_name] + wrapper_db[callee_name]["chain"]
-
-    if "index" in spec:
-        size_vn_id = entry.get("size_vn")
-        if entry["size_expr"] == "const":
-            return {
-                "inner_allocator": callee_name,
-                "inner_spec": spec,
-                "size_spec": spec,
-                "chain": inner_chain,
-            }
-        if size_vn_id is None:
-            return None
-        size_idx = spec["index"]
-        call_op = _find_alloc_call_op(ops_raw, entry["call_seq"])
-        if call_op is None:
-            return None
-        call_inputs = op_inputs(call_op)
-        args = call_inputs[1:]
-        if size_idx >= len(args):
-            return None
-        origin = _trace_backward(args[size_idx])
-        pidx = _param_index_of(origin, params)
-        if pidx is None:
-            return None
-        return {
-            "inner_allocator": callee_name,
-            "inner_spec": spec,
-            "size_spec": {"index": pidx},
-            "chain": inner_chain,
-        }
-
-    if "product" in spec:
-        idx_a, idx_b = spec["product"]
-        call_op = _find_alloc_call_op(ops_raw, entry["call_seq"])
-        if call_op is None:
-            return None
-        call_inputs = op_inputs(call_op)
-        args = call_inputs[1:]
-        if idx_a >= len(args) or idx_b >= len(args):
-            return None
-        arg_a, arg_b = args[idx_a], args[idx_b]
-        origin_a = _trace_backward(arg_a)
-        origin_b = _trace_backward(arg_b)
-        a_const = origin_a.isConstant()
-        b_const = origin_b.isConstant()
-        pidx_a = None if a_const else _param_index_of(origin_a, params)
-        pidx_b = None if b_const else _param_index_of(origin_b, params)
-
-        if a_const and int(origin_a.getOffset()) == 1 and pidx_b is not None:
-            return {
-                "inner_allocator": callee_name,
-                "inner_spec": spec,
-                "size_spec": {"index": pidx_b},
-                "chain": inner_chain,
-            }
-        if b_const and int(origin_b.getOffset()) == 1 and pidx_a is not None:
-            return {
-                "inner_allocator": callee_name,
-                "inner_spec": spec,
-                "size_spec": {"index": pidx_a},
-                "chain": inner_chain,
-            }
-        if pidx_a is not None and pidx_b is not None:
-            return {
-                "inner_allocator": callee_name,
-                "inner_spec": spec,
-                "size_spec": {"product": [pidx_a, pidx_b]},
-                "chain": inner_chain,
-            }
-        if a_const and b_const:
-            return {
-                "inner_allocator": callee_name,
-                "inner_spec": spec,
-                "size_spec": spec,
-                "chain": inner_chain,
-            }
-        return None
-
-    return None
-
-
 def _find_alloc_call_op(ops_raw: list, call_seq: int):
     """Find the CALL op at a given sequence number."""
     for op in ops_raw:
@@ -709,62 +582,77 @@ def _build_forwarded_args(
     return None
 
 
+# Upper bound on allocator call sites inside one multi-path wrapper.  Two is
+# the common shape (branch around two wrappers, like dnsmasq\'s opt_malloc);
+# the bound just keeps sprawling alloc-heavy functions out of detection.
+_MAX_WRAPPER_CALLS = 4
+
+
 def build_wrapper_candidate(
     entries: list[dict[str, Any]],
     ops_raw: list,
     allocators: dict[str, dict[str, Any] | None],
 ) -> dict[str, Any] | None:
-    """Extract lightweight wrapper candidate data from a function's alloc entries.
+    """Extract lightweight wrapper candidate data from a function\'s alloc entries.
 
-    Returns a candidate dict if the function might be a wrapper (has exactly one
-    call to a known allocator or heuristic match, no stores, and size traces to
-    a parameter).  The candidate carries all data needed for iterative detection
-    without live Ghidra objects.
+    Returns a candidate dict if the function might be a wrapper: every alloc
+    call site is store-free and returns its result, and there are at most
+    _MAX_WRAPPER_CALLS of them.  Multi-path wrappers (branch around two
+    wrappers, e.g. ``if (f) return safe_malloc(n); return whine_malloc(n);``)
+    produce one call record per site; detect_wrappers_from_candidates accepts
+    them only when every site derives the same size spec.  The candidate
+    carries all data needed for iterative detection without live Ghidra
+    objects.
     """
-    if len(entries) != 1:
-        return None
-    entry = entries[0]
-    if entry["stores"]:
-        return None
-    callee = entry["callee"]
-    if callee is None:
-        return None
-
-    if not entry["returns"]["returned"] and not _alloc_reaches_return_register(
-        entry, ops_raw
-    ):
+    if not 1 <= len(entries) <= _MAX_WRAPPER_CALLS:
         return None
 
     params = _collect_param_varnodes(ops_raw)
     if not params:
         return None
 
-    call_op = _find_alloc_call_op(ops_raw, entry["call_seq"])
-    if call_op is None:
-        return None
-    call_inputs = op_inputs(call_op)
-    args = call_inputs[1:]
+    calls: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry["stores"]:
+            return None
+        callee = entry["callee"]
+        if callee is None:
+            return None
+        if not entry["returns"]["returned"] and not _alloc_reaches_return_register(
+            entry, ops_raw
+        ):
+            return None
 
-    param_mapping: dict[int, int] = {}
-    for i, arg in enumerate(args):
-        origin = _trace_backward(arg)
-        if origin.isConstant():
-            continue
-        pidx = _param_index_of(origin, params)
-        if pidx is not None:
-            param_mapping[i] = pidx
+        call_op = _find_alloc_call_op(ops_raw, entry["call_seq"])
+        if call_op is None:
+            return None
+        call_inputs = op_inputs(call_op)
+        args = call_inputs[1:]
 
-    const_args: dict[int, int] = {}
-    for i, arg in enumerate(args):
-        origin = _trace_backward(arg)
-        if origin.isConstant():
-            const_args[i] = int(origin.getOffset())
+        param_mapping: dict[int, int] = {}
+        const_args: dict[int, int] = {}
+        for i, arg in enumerate(args):
+            origin = _trace_backward(arg)
+            if origin.isConstant():
+                const_args[i] = int(origin.getOffset())
+                continue
+            pidx = _param_index_of(origin, params)
+            if pidx is not None:
+                param_mapping[i] = pidx
+
+        calls.append(
+            {
+                "callee": callee,
+                "param_mapping": param_mapping,
+                "const_args": const_args,
+                "num_args": len(args),
+            }
+        )
 
     return {
-        "callee": callee,
-        "param_mapping": param_mapping,
-        "const_args": const_args,
-        "num_args": len(args),
+        # Flat view of the first call keeps single-site candidates unchanged.
+        **calls[0],
+        "calls": calls,
     }
 
 
@@ -784,30 +672,51 @@ def detect_wrappers_from_candidates(
         for func_name, cand in candidates.items():
             if func_name in wrapper_db:
                 continue
-            callee = cand["callee"]
-            spec: dict[str, Any] | None = None
+            # A candidate may carry several allocator call sites (a
+            # multi-path wrapper); every site must derive the same size
+            # spec or the function is not treated as a wrapper.
+            call_records = cand.get("calls") or [cand]
+
+            wrapper_spec: dict[str, Any] | None = None
+            first_spec: dict[str, Any] | None = None
             chain_prefix: list[str] = []
 
-            if callee in allocators:
-                spec = allocators[callee]
-                chain_prefix = [callee]
-            elif callee in wrapper_db:
-                w = wrapper_db[callee]
-                spec = w["size_spec"]
-                chain_prefix = [callee] + w["chain"]
-            else:
-                continue
+            for record in call_records:
+                callee = record["callee"]
+                spec: dict[str, Any] | None = None
+                if callee in allocators:
+                    spec = allocators[callee]
+                    record_chain = [callee]
+                elif callee in wrapper_db:
+                    w = wrapper_db[callee]
+                    spec = w["size_spec"]
+                    record_chain = [callee] + w["chain"]
+                else:
+                    wrapper_spec = None
+                    break
 
-            if spec is None:
-                continue
+                if spec is None:
+                    wrapper_spec = None
+                    break
 
-            wrapper_spec = _derive_wrapper_spec(cand, spec)
-            if wrapper_spec is None:
+                record_spec = _derive_wrapper_spec(record, spec)
+                if record_spec is None:
+                    wrapper_spec = None
+                    break
+                if wrapper_spec is None:
+                    wrapper_spec = record_spec
+                    first_spec = spec
+                    chain_prefix = record_chain
+                elif not _specs_equivalent(wrapper_spec, record_spec):
+                    wrapper_spec = None
+                    break
+
+            if wrapper_spec is None or first_spec is None:
                 continue
 
             wrapper_db[func_name] = {
-                "inner_allocator": callee,
-                "inner_spec": spec,
+                "inner_allocator": cand["callee"],
+                "inner_spec": first_spec,
                 "size_spec": wrapper_spec,
                 "chain": chain_prefix,
             }
@@ -849,6 +758,19 @@ def _derive_wrapper_spec(
         return None
 
     return None
+
+
+def _specs_equivalent(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Whether two derived size specs describe the same sizing.
+
+    Product specs compare order-insensitively: ``product(0, 1)`` and
+    ``product(1, 0)`` both mean "the product of both params".
+    """
+    if a == b:
+        return True
+    if "product" in a and "product" in b:
+        return sorted(a["product"]) == sorted(b["product"])
+    return False
 
 
 def build_alloc_entries(

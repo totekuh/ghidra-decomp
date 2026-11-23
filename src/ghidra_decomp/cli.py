@@ -5,6 +5,7 @@ from pathlib import Path
 
 import click
 
+from . import __version__
 from .decompiler import (
     _find_all_paths,
     _find_endpoints,
@@ -18,6 +19,7 @@ from .decompiler import (
 
 
 @click.command()
+@click.version_option(version=__version__, prog_name="ghidra-decomp")
 @click.argument(
     "binary",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -372,6 +374,7 @@ def _resolve_or_fail(callgraph: dict, identifier: str) -> str:
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="ghidra-decomp-query")
 def query():
     """Query a previously exported callgraph (no Ghidra needed)."""
 

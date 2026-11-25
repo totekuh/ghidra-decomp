@@ -256,7 +256,7 @@ class TestCliPdbRouting:
             raise RuntimeError("intercepted")
 
         monkeypatch.setattr(
-            "ghidra_decomp.decompiler._start_pyghidra",
+            "ghidra_decomp.decompiler.orchestrator._start_pyghidra",
             _raise,
         )
 
@@ -364,7 +364,7 @@ class TestPromptIntegration:
             raise RuntimeError("intercepted")
 
         monkeypatch.setattr(
-            "ghidra_decomp.decompiler._start_pyghidra",
+            "ghidra_decomp.decompiler.orchestrator._start_pyghidra",
             _raise,
         )
 

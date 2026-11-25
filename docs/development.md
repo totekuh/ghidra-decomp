@@ -17,7 +17,8 @@ ruff format --check src/ tests/
 mypy src/ghidra_decomp/ --ignore-missing-imports
 pytest tests/test_artifacts.py tests/test_decompiler_helpers.py \
        tests/test_filters.py tests/test_parallel.py tests/test_pcode.py \
-       tests/test_alloc_map.py
+       tests/test_alloc_map.py tests/test_callgraph_rendering.py \
+       tests/test_kernel_gdt.py tests/test_struct_map.py
 pytest tests/test_multiarch_e2e.py::test_checked_in_fixture_hashes_and_provenance
 ```
 
@@ -26,6 +27,29 @@ with fakes, so they need neither Ghidra nor Docker.
 
 CI installs the project and pytest before running these fast unit/CLI tests and the
 checked-in fixture checksum/provenance validation. It does not start embedded Ghidra.
+
+## Package structure
+
+```
+src/ghidra_decomp/
+├── __init__.py
+├── cli/              main + query commands
+├── decompiler/       core decompilation
+│   ├── graph/        callgraph algorithms + mermaid
+│   ├── extract/      function/program/type metadata extraction
+│   ├── export/       artifact writing, indexes, secondary products
+│   └── setup/        JVM startup, filters, resume
+├── alloc_map/        allocation tracing + wrapper detection
+├── artifacts/        atomic writes, staging, publication
+├── kernel_gdt/       kernel type archive builder
+├── pcode/            high p-code analysis + serialization
+├── polish/           readability post-processing transforms
+└── struct_map.py     struct/union type mapping
+```
+
+Hard rule: max 400 lines per source file. When a file grows past the limit, split
+into a submodule package with `__init__.py` re-exports. Exception: `cli/main_cmd.py`
+(~420 lines, 280 are click decorator boilerplate).
 
 ## Full end-to-end suite
 

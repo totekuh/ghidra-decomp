@@ -332,7 +332,8 @@ def test_function_aliases_are_unique_and_retain_nonprimary_same_name():
 def test_manifest_entry_points_exclude_non_executable_data_exports(monkeypatch):
     exports = [{"address": value} for value in ("1000", "2000", "3000")]
     monkeypatch.setattr(
-        "ghidra_decomp.decompiler._extract_exports", lambda program: exports
+        "ghidra_decomp.decompiler.extract.program._extract_exports",
+        lambda program: exports,
     )
     blocks = {
         "1000": SimpleNamespace(isExecute=lambda: False),

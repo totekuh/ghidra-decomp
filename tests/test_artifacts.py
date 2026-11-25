@@ -260,7 +260,9 @@ def test_failed_rerun_preserves_complete_corpus(tmp_path, monkeypatch):
     def fail_start(*_args, **_kwargs):
         raise ClickException("injected startup failure")
 
-    monkeypatch.setattr("ghidra_decomp.decompiler._start_pyghidra", fail_start)
+    monkeypatch.setattr(
+        "ghidra_decomp.decompiler.orchestrator._start_pyghidra", fail_start
+    )
 
     with pytest.raises(ClickException, match="injected startup failure"):
         decompile_binary(binary, output)
@@ -294,6 +296,7 @@ def test_export_setup_failure_does_not_create_decompiler(tmp_path, monkeypatch):
         "ghidra.util.task": ModuleType("ghidra.util.task"),
     }
     modules["ghidra.app.decompiler"].DecompInterface = FakeDecompInterface
+    modules["ghidra.app.decompiler"].DecompileOptions = type("DecompileOptions", (), {})
     modules["ghidra.framework"].Application = object
     modules["ghidra.util.task"].ConsoleTaskMonitor = object
     for name, module in modules.items():
@@ -302,7 +305,9 @@ def test_export_setup_failure_does_not_create_decompiler(tmp_path, monkeypatch):
     def fail_extraction(_program):
         raise RuntimeError("injected setup failure")
 
-    monkeypatch.setattr("ghidra_decomp.decompiler._extract_strings", fail_extraction)
+    monkeypatch.setattr(
+        "ghidra_decomp.decompiler.export.artifacts._extract_strings", fail_extraction
+    )
     program = SimpleNamespace(
         getFunctionManager=lambda: SimpleNamespace(getFunctions=lambda _forward: [])
     )

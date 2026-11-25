@@ -159,9 +159,11 @@ def test_publish_directory_restores_backup_when_publication_fails(
             raise OSError("injected publication failure")
         real_replace(source, destination)
 
-    monkeypatch.setattr("ghidra_decomp.artifacts.os.replace", fail_staging_publish)
     monkeypatch.setattr(
-        "ghidra_decomp.artifacts._try_atomic_exchange", lambda s, t: False
+        "ghidra_decomp.artifacts.corpus.os.replace", fail_staging_publish
+    )
+    monkeypatch.setattr(
+        "ghidra_decomp.artifacts.corpus._try_atomic_exchange", lambda s, t: False
     )
 
     with pytest.raises(OSError, match="injected publication failure"):
@@ -213,7 +215,7 @@ def test_fsync_directory_tolerates_unsupported_permission_error(tmp_path, monkey
     def unsupported_open(*args, **kwargs):
         raise PermissionError(errno.EACCES, "unsupported")
 
-    monkeypatch.setattr("ghidra_decomp.artifacts.os.open", unsupported_open)
+    monkeypatch.setattr("ghidra_decomp.artifacts.filesystem.os.open", unsupported_open)
 
     fsync_directory(tmp_path)
 

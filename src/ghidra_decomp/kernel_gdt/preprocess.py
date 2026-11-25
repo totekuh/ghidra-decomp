@@ -211,6 +211,9 @@ def _simplify_complex_exprs(text: str) -> str:
         if "= ;" in stripped:
             continue
 
+        if stripped == ";":
+            continue
+
         out.append(line)
 
     text = "\n".join(out)
@@ -221,4 +224,5 @@ def _simplify_complex_exprs(text: str) -> str:
     )
     text = re.sub(r"\b(\d+)LU\b", r"\1UL", text)
     text = re.sub(r"\b(\d+)LLU\b", r"\1ULL", text)
+    text = re.sub(r";\s*;", ";", text)
     return text

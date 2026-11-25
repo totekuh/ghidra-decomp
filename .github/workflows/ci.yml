@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  GHIDRA_VERSION: "12.2"
+  GHIDRA_DATE: "20261016"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -41,7 +45,41 @@ jobs:
       - run: >
           pytest tests/test_artifacts.py
           tests/test_decompiler_helpers.py tests/test_filters.py
-          tests/test_parallel.py
+          tests/test_parallel.py tests/test_callgraph_rendering.py
+          tests/test_alloc_map.py tests/test_pcode.py
+          tests/test_struct_map.py tests/test_kernel_gdt.py
 
-  # Note: e2e tests require a Ghidra installation and are not run in CI.
-  # Run them locally with: pytest tests/
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Ghidra
+        id: cache-ghidra
+        uses: actions/cache@v4
+        with:
+          path: /opt/ghidra
+          key: ghidra-${{ env.GHIDRA_VERSION }}-${{ env.GHIDRA_DATE }}
+
+      - name: Install Ghidra
+        if: steps.cache-ghidra.outputs.cache-hit != 'true'
+        run: |
+          curl -sLO "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip"
+          unzip -q "ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip" -d /opt
+          mv "/opt/ghidra_${GHIDRA_VERSION}_PUBLIC" /opt/ghidra
+
+      - run: pip install . pytest
+      - name: E2E tests
+        env:
+          GHIDRA_INSTALL_DIR: /opt/ghidra
+        run: >
+          pytest tests/ -v
+          --ignore=tests/test_polish.py
+          -x

@@ -284,3 +284,32 @@ def test_filter_returns_all_when_no_references():
     raw = build_struct_map(SAMPLE_TYPES)
     filtered = filter_referenced_types(raw)
     assert filtered["structs"] == raw["structs"]
+
+
+def test_filter_drops_all_structs_when_references_are_non_struct_names():
+    """Stripped-binary scenario: references exist but are all non-struct types
+    like undefined8, so every GDT struct is filtered out.
+
+    This is the scenario that dump_all_structs=True (from --gdt) bypasses.
+    """
+    raw = build_struct_map(SAMPLE_TYPES)
+    function_records = [
+        {
+            "signature": {
+                "return_type": "undefined8",
+                "parameters": [
+                    {"data_type": "undefined8 *", "name": "param_1"},
+                    {"data_type": "undefined4", "name": "param_2"},
+                ],
+                "locals": [
+                    {"data_type": "void *", "name": "local_10"},
+                ],
+            },
+            "params": [
+                {"type": "undefined8 *", "name": "param_1"},
+                {"type": "undefined4", "name": "param_2"},
+            ],
+        }
+    ]
+    filtered = filter_referenced_types(raw, function_records=function_records)
+    assert filtered["structs"] == {}

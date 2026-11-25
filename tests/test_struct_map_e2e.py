@@ -119,6 +119,46 @@ def test_struct_map_not_empty(struct_corpus):
     assert isinstance(data["structs"], dict)
 
 
+# ── Tier 3: --struct-map with --gdt dumps all GDT types ──────────────
+
+GDT_ARCHIVE = Path(
+    "/usr/share/ghidra/Ghidra/Features/Base/data/typeinfo/generic/generic_clib.gdt"
+)
+
+
+@pytest.fixture(scope="module")
+def struct_gdt_corpus(tmp_path_factory, ghidra_path) -> Path:
+    if not GDT_ARCHIVE.is_file():
+        pytest.skip(f"the Ghidra installation has no {GDT_ARCHIVE.name}")
+    output = tmp_path_factory.mktemp("struct_gdt") / "corpus"
+    run_export(
+        FIXTURES / "sample",
+        output,
+        "--struct-map",
+        "--gdt",
+        str(GDT_ARCHIVE),
+        ghidra_path=ghidra_path,
+    )
+    return output
+
+
+def test_struct_map_with_gdt_has_structs(struct_gdt_corpus):
+    """When --gdt is used, struct_map must include GDT types even on stripped binaries."""
+    data = load_json(struct_gdt_corpus, "struct_map.json")
+    assert data["schema_version"] == 1
+    assert len(data["structs"]) > 0, "struct_map is empty despite --gdt providing types"
+
+
+def test_struct_map_with_gdt_structs_have_fields(struct_gdt_corpus):
+    """GDT-sourced structs must have the standard field layout."""
+    data = load_json(struct_gdt_corpus, "struct_map.json")
+    for name, info in data["structs"].items():
+        assert "size" in info, f"{name} missing size"
+        assert "kind" in info, f"{name} missing kind"
+        assert info["kind"] in ("struct", "union")
+        assert "fields" in info, f"{name} missing fields"
+
+
 def test_struct_map_deterministic_across_workers(tmp_path, ghidra_path):
     """struct_map.json must be identical for serial and parallel decompilation."""
     binary = FIXTURES / "sample"

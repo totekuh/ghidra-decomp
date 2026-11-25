@@ -15,9 +15,11 @@ from ghidra_decomp.kernel_gdt import (
     COMPAT_SHIM,
     PRIORITY_HEADERS,
     KernelGdtError,
+    _group_by_subdir,
     build_amalgamation,
     build_gcc_command,
     discover_headers,
+    discover_tree_headers,
     parse_kconfig,
     preprocess_headers,
 )
@@ -114,6 +116,72 @@ def test_discover_headers_unsupported_arch(tmp_path: Path):
         discover_headers(tmp_path, "sparc128")
 
 
+# ── discover_tree_headers ────────────────────────────────────────────
+
+
+def test_discover_tree_headers_finds_driver_headers(fake_kernel_tree: Path):
+    priority = discover_headers(fake_kernel_tree, "x86_64")
+    tree = discover_tree_headers(fake_kernel_tree, "x86_64", priority)
+    abs_names = {p.name for p in tree}
+    assert "mwifiex.h" in abs_names
+
+
+def test_discover_tree_headers_excludes_tools(fake_kernel_tree: Path):
+    (fake_kernel_tree / "tools" / "perf" / "util").mkdir(parents=True)
+    (fake_kernel_tree / "tools" / "perf" / "util" / "perf.h").write_text("/* perf */\n")
+    priority = discover_headers(fake_kernel_tree, "x86_64")
+    tree = discover_tree_headers(fake_kernel_tree, "x86_64", priority)
+    abs_names = {p.name for p in tree}
+    assert "perf.h" not in abs_names
+
+
+def test_discover_tree_headers_excludes_non_target_arch(fake_kernel_tree: Path):
+    priority = discover_headers(fake_kernel_tree, "x86_64")
+    tree = discover_tree_headers(fake_kernel_tree, "x86_64", priority)
+    for p in tree:
+        assert "/arch/arm64/" not in str(p)
+
+
+def test_discover_tree_headers_deduplicates_priority(fake_kernel_tree: Path):
+    priority = discover_headers(fake_kernel_tree, "x86_64")
+    tree = discover_tree_headers(fake_kernel_tree, "x86_64", priority)
+    for p in tree:
+        rel = p.relative_to(fake_kernel_tree.resolve())
+        rel_str = str(rel)
+        assert rel_str not in priority, f"{rel_str} duplicates a priority header"
+
+
+def test_discover_tree_headers_empty_tree(tmp_path: Path):
+    tree = discover_tree_headers(tmp_path, "x86_64", [])
+    assert tree == []
+
+
+def test_discover_tree_headers_sorted(fake_kernel_tree: Path):
+    priority = discover_headers(fake_kernel_tree, "x86_64")
+    tree = discover_tree_headers(fake_kernel_tree, "x86_64", priority)
+    assert tree == sorted(tree)
+
+
+def test_amalgamation_includes_tree_headers_with_absolute_paths(
+    fake_kernel_tree: Path,
+):
+    headers = discover_headers(fake_kernel_tree, "x86_64")
+    tree = discover_tree_headers(fake_kernel_tree, "x86_64", headers)
+    text = build_amalgamation(fake_kernel_tree, "x86_64", headers, tree_headers=tree)
+    for tp in tree:
+        assert f'#include "{tp}"' in text
+    assert "#include <linux/types.h>" in text
+
+
+def test_amalgamation_tree_headers_after_priority(fake_kernel_tree: Path):
+    headers = discover_headers(fake_kernel_tree, "x86_64")
+    tree = discover_tree_headers(fake_kernel_tree, "x86_64", headers)
+    text = build_amalgamation(fake_kernel_tree, "x86_64", headers, tree_headers=tree)
+    last_priority = text.rfind("#include <")
+    first_tree = text.find('#include "/')
+    assert first_tree > last_priority
+
+
 # ── parse_kconfig ─────────────────────────────────────────────────────
 
 
@@ -200,7 +268,7 @@ _GCC_INCLUDE = SimpleNamespace(
 )
 
 
-@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+@patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", return_value=_GCC_INCLUDE)
 def test_build_gcc_command_starts_with_gcc(_mock, tmp_path: Path):
     cmd = build_gcc_command(
         tmp_path, "x86_64", tmp_path / "kernel_types.h", tmp_path / "compat.h"
@@ -210,7 +278,7 @@ def test_build_gcc_command_starts_with_gcc(_mock, tmp_path: Path):
     assert "-nostdinc" in cmd
 
 
-@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+@patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", return_value=_GCC_INCLUDE)
 def test_build_gcc_command_arch_include_paths(_mock, tmp_path: Path):
     cmd = build_gcc_command(
         tmp_path, "x86_64", tmp_path / "kernel_types.h", tmp_path / "compat.h"
@@ -219,7 +287,7 @@ def test_build_gcc_command_arch_include_paths(_mock, tmp_path: Path):
     assert f"{tmp_path}/arch/x86/include" in cmd_str
 
 
-@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+@patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", return_value=_GCC_INCLUDE)
 def test_build_gcc_command_arm64_arch_path(_mock, tmp_path: Path):
     cmd = build_gcc_command(
         tmp_path, "arm64", tmp_path / "kernel_types.h", tmp_path / "compat.h"
@@ -228,7 +296,7 @@ def test_build_gcc_command_arm64_arch_path(_mock, tmp_path: Path):
     assert f"{tmp_path}/arch/arm64/include" in cmd_str
 
 
-@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+@patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", return_value=_GCC_INCLUDE)
 def test_build_gcc_command_includes_compat_shim(_mock, tmp_path: Path):
     compat = tmp_path / "compat.h"
     cmd = build_gcc_command(tmp_path, "x86_64", tmp_path / "kernel_types.h", compat)
@@ -236,14 +304,14 @@ def test_build_gcc_command_includes_compat_shim(_mock, tmp_path: Path):
     assert cmd[idx + 1] == str(compat)
 
 
-@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+@patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", return_value=_GCC_INCLUDE)
 def test_build_gcc_command_ends_with_amalgamation(_mock, tmp_path: Path):
     amal = tmp_path / "kernel_types.h"
     cmd = build_gcc_command(tmp_path, "x86_64", amal, tmp_path / "compat.h")
     assert cmd[-1] == str(amal)
 
 
-@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+@patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", return_value=_GCC_INCLUDE)
 def test_build_gcc_command_has_isystem(_mock, tmp_path: Path):
     cmd = build_gcc_command(
         tmp_path, "x86_64", tmp_path / "kernel_types.h", tmp_path / "compat.h"
@@ -258,7 +326,7 @@ def test_build_gcc_command_has_isystem(_mock, tmp_path: Path):
 def test_preprocess_headers_success(tmp_path: Path):
     ok_result = SimpleNamespace(returncode=0, stdout="typedef int __u32;\n", stderr="")
     calls = [_GCC_INCLUDE, ok_result]
-    with patch("ghidra_decomp.kernel_gdt.subprocess.run", side_effect=calls):
+    with patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", side_effect=calls):
         result = preprocess_headers(tmp_path, "x86_64", "/* test */", tmp_path)
     assert result.is_file()
     assert "typedef int __u32;" in result.read_text()
@@ -275,7 +343,10 @@ def test_preprocess_headers_gcc_not_found(tmp_path: Path):
         raise FileNotFoundError("gcc")
 
     with (
-        patch("ghidra_decomp.kernel_gdt.subprocess.run", side_effect=_side_effect),
+        patch(
+            "ghidra_decomp.kernel_gdt.preprocess.subprocess.run",
+            side_effect=_side_effect,
+        ),
         pytest.raises(KernelGdtError, match="gcc not found"),
     ):
         preprocess_headers(tmp_path, "x86_64", "/* test */", tmp_path)
@@ -288,7 +359,7 @@ def test_preprocess_headers_gcc_failure(tmp_path: Path):
     calls = [_GCC_INCLUDE, fail_result]
 
     with (
-        patch("ghidra_decomp.kernel_gdt.subprocess.run", side_effect=calls),
+        patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", side_effect=calls),
         pytest.raises(KernelGdtError, match="gcc preprocessing failed"),
     ):
         preprocess_headers(tmp_path, "x86_64", "/* test */", tmp_path)
@@ -297,7 +368,7 @@ def test_preprocess_headers_gcc_failure(tmp_path: Path):
 def test_preprocess_headers_writes_amalgamation(tmp_path: Path):
     ok_result = SimpleNamespace(returncode=0, stdout="/* output */\n", stderr="")
     calls = [_GCC_INCLUDE, ok_result]
-    with patch("ghidra_decomp.kernel_gdt.subprocess.run", side_effect=calls):
+    with patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", side_effect=calls):
         preprocess_headers(tmp_path, "x86_64", "#define TEST 1\n", tmp_path)
     assert (tmp_path / "kernel_types.h").is_file()
     assert "#define TEST 1" in (tmp_path / "kernel_types.h").read_text()
@@ -306,10 +377,92 @@ def test_preprocess_headers_writes_amalgamation(tmp_path: Path):
 def test_preprocess_headers_writes_compat_shim(tmp_path: Path):
     ok_result = SimpleNamespace(returncode=0, stdout="/* output */\n", stderr="")
     calls = [_GCC_INCLUDE, ok_result]
-    with patch("ghidra_decomp.kernel_gdt.subprocess.run", side_effect=calls):
+    with patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", side_effect=calls):
         preprocess_headers(tmp_path, "x86_64", "/* test */", tmp_path)
     assert (tmp_path / "ghidra_compat.h").is_file()
     assert "__attribute__" in (tmp_path / "ghidra_compat.h").read_text()
+
+
+# ── _group_by_subdir / batched preprocessing ─────────────────────────
+
+
+def test_group_by_subdir(fake_kernel_tree: Path):
+    priority = discover_headers(fake_kernel_tree, "x86_64")
+    tree = discover_tree_headers(fake_kernel_tree, "x86_64", priority)
+    groups = _group_by_subdir(tree, fake_kernel_tree.resolve())
+    assert "drivers" in groups
+    for h in groups["drivers"]:
+        assert "drivers" in str(h)
+
+
+def test_preprocess_skips_failing_group(tmp_path: Path):
+    ok_priority = SimpleNamespace(
+        returncode=0, stdout="typedef int __u32;\n", stderr=""
+    )
+    ok_drivers = SimpleNamespace(
+        returncode=0, stdout="struct mwifiex_private { int x; };\n", stderr=""
+    )
+    fail_arch = SimpleNamespace(
+        returncode=1, stdout="", stderr="fatal error: lapic.h\n"
+    )
+    calls = [
+        _GCC_INCLUDE,
+        ok_priority,
+        _GCC_INCLUDE,
+        ok_drivers,
+        _GCC_INCLUDE,
+        fail_arch,
+    ]
+    tree_groups = {
+        "drivers": [Path("/fake/drivers/mwifiex.h")],
+        "arch": [Path("/fake/arch/x86/kvm/lapic.h")],
+    }
+    with patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", side_effect=calls):
+        path = preprocess_headers(
+            tmp_path,
+            "x86_64",
+            "/* priority */",
+            tmp_path,
+            tree_groups=tree_groups,
+        )
+    text = path.read_text()
+    assert "__u32" in text
+    assert "mwifiex_private" in text
+
+
+def test_preprocess_all_groups_succeed(tmp_path: Path):
+    ok_priority = SimpleNamespace(
+        returncode=0, stdout="typedef int __u32;\n", stderr=""
+    )
+    ok_drivers = SimpleNamespace(
+        returncode=0, stdout="struct driver_a { int a; };\n", stderr=""
+    )
+    ok_net = SimpleNamespace(
+        returncode=0, stdout="struct net_b { int b; };\n", stderr=""
+    )
+    calls = [
+        _GCC_INCLUDE,
+        ok_priority,
+        _GCC_INCLUDE,
+        ok_drivers,
+        _GCC_INCLUDE,
+        ok_net,
+    ]
+    tree_groups = {
+        "drivers": [Path("/fake/drivers/a.h")],
+        "net": [Path("/fake/net/b.h")],
+    }
+    with patch("ghidra_decomp.kernel_gdt.preprocess.subprocess.run", side_effect=calls):
+        path = preprocess_headers(
+            tmp_path,
+            "x86_64",
+            "/* priority */",
+            tmp_path,
+            tree_groups=tree_groups,
+        )
+    text = path.read_text()
+    assert "driver_a" in text
+    assert "net_b" in text
 
 
 # ── ARCH_DEFINES ──────────────────────────────────────────────────────
@@ -463,9 +616,10 @@ def test_orchestrator_calls_all_stages(fake_kernel_tree: Path, tmp_path: Path):
     mock_stats = {"types_count": 0, "structs": 0, "unions": 0, "enums": 0}
 
     with (
-        patch("ghidra_decomp.kernel_gdt.preprocess_headers") as mock_preprocess,
+        patch("ghidra_decomp.kernel_gdt.builder.preprocess_headers") as mock_preprocess,
         patch(
-            "ghidra_decomp.kernel_gdt.parse_and_export_gdt", return_value=mock_stats
+            "ghidra_decomp.kernel_gdt.builder.parse_and_export_gdt",
+            return_value=mock_stats,
         ) as mock_parse_export,
     ):
         mock_preprocess.return_value = tmp_path / "preprocessed.h"
@@ -494,8 +648,11 @@ def test_orchestrator_passes_config(fake_kernel_tree: Path, tmp_path: Path):
     mock_stats = {"types_count": 0, "structs": 0, "unions": 0, "enums": 0}
 
     with (
-        patch("ghidra_decomp.kernel_gdt.preprocess_headers") as mock_preprocess,
-        patch("ghidra_decomp.kernel_gdt.parse_and_export_gdt", return_value=mock_stats),
+        patch("ghidra_decomp.kernel_gdt.builder.preprocess_headers") as mock_preprocess,
+        patch(
+            "ghidra_decomp.kernel_gdt.builder.parse_and_export_gdt",
+            return_value=mock_stats,
+        ),
     ):
         mock_preprocess.return_value = tmp_path / "preprocessed.h"
         (tmp_path / "preprocessed.h").write_text("/* preprocessed */\n")

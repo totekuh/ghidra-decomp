@@ -908,6 +908,7 @@ def decompile_binary(
                     pcode=pcode,
                     alloc_map=alloc_map,
                     struct_map=struct_map,
+                    dump_all_structs=struct_map and bool(gdt),
                     alloc_map_config=alloc_map_config,
                     requested_analysis=requested_analysis,
                     request_fingerprint=request_fingerprint,
@@ -1458,6 +1459,7 @@ def _export_all(
     pcode: bool = False,
     alloc_map: bool = False,
     struct_map: bool = False,
+    dump_all_structs: bool = False,
     alloc_map_config: Path | None = None,
     requested_analysis: dict,
     request_fingerprint: dict,
@@ -1807,13 +1809,16 @@ def _export_all(
         secondary["alloc_map"] = str(alloc_map_path.relative_to(output))
     if struct_map:
         raw_struct_map = build_struct_map(types)
-        filtered = filter_referenced_types(
-            raw_struct_map,
-            alloc_entries=all_alloc_entries,
-            function_records=records,
-        )
+        if dump_all_structs:
+            final_struct_map = raw_struct_map
+        else:
+            final_struct_map = filter_referenced_types(
+                raw_struct_map,
+                alloc_entries=all_alloc_entries,
+                function_records=records,
+            )
         struct_map_path = output / "struct_map.json"
-        atomic_write_json(struct_map_path, filtered)
+        atomic_write_json(struct_map_path, final_struct_map)
         indexed_paths.append(struct_map_path)
         secondary["struct_map"] = str(struct_map_path.relative_to(output))
     if gzf:

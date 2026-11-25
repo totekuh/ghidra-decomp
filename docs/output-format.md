@@ -172,6 +172,11 @@ struct and union type referenced by decompiled code. The flag implies `--alloc-m
 A type is included when it appears as `struct_type` on an alloc_map entry, as
 `base_type` on a store, or in function signatures (parameters, locals, return types).
 
+When `--gdt` is also provided, all struct and union types from the applied data type
+archives are included without reference filtering. This ensures the full type catalog
+is available even when the binary is stripped and function signatures lack struct-level
+type information.
+
 ```json
 {
   "schema_version": 1,

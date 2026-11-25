@@ -34,7 +34,7 @@ ghidra-decomp ./firmware.bin -o ./firmware_decomp
 | `--pcode` | Also emit `<function>.pcode.json` per function: SSA high-pcode ops, def-use, block CFG, varnode storage, and resolved call arguments | off |
 | `--alloc-map` | Emit `alloc_map.json` recording every allocation call site, where the result pointer is stored, and how it flows forward. Detects allocator wrappers and resolves sizes through wrapper chains. Implies `--pcode`. | off |
 | `--alloc-map-config` | JSON file extending the built-in allocator list for `--alloc-map` | none |
-| `--struct-map` | Emit `struct_map.json` recording every resolved struct/union type referenced by decompiled code, with field layouts sorted by offset. Implies `--alloc-map`. | off |
+| `--struct-map` | Emit `struct_map.json` recording every resolved struct/union type referenced by decompiled code, with field layouts sorted by offset. When combined with `--gdt`, includes all GDT types unfiltered. Implies `--alloc-map`. | off |
 | `--version` | Print version and exit | |
 | `--ghidra-path` | Path to Ghidra install | `$GHIDRA_INSTALL_DIR` |
 | `--base-addr` | Rebase binary to this address before analysis | none |
@@ -64,6 +64,7 @@ ghidra-decomp ./firmware.bin -o ./firmware_decomp
 | `--build-kernel-gdt` | Build a `.gdt` type archive from a Linux kernel source tree. Requires `--arch` and `-o`. | |
 | `--arch` | Target architecture for `--build-kernel-gdt` (`x86_64`, `x86`, `arm`, `arm64`, `mips`, `riscv64`, `ppc`) | |
 | `--kernel-config` | Kernel `.config` or `autoconf.h` for `--build-kernel-gdt` | auto-detect |
+| `--no-tree-headers` | Only use curated priority headers for `--build-kernel-gdt` (skip full tree scan) | scan on |
 
 ## Kernel Type Archives
 
@@ -78,7 +79,13 @@ ghidra-decomp --build-kernel-gdt /usr/src/linux-source-6.1 \
 ghidra-decomp --struct-map --gdt linux-6.1-x86_64.gdt some_driver.ko
 ```
 
-The pipeline discovers ~66 curated kernel headers, preprocesses them with `gcc -E`, strips GCC extensions, and feeds the result to Ghidra's CParser. Typical output: 20,000+ types (structs, unions, enums) in under 20 seconds.
+The pipeline discovers ~66 curated kernel headers, then walks the full source tree for additional `.h` files under `drivers/`, `net/`, `sound/`, `fs/`, and other subsystems. This captures driver-internal structs (e.g. `mwifiex_private`) that only live outside `include/`.
+
+Tree headers are grouped by top-level directory and preprocessed independently with `gcc -E`. If one directory group fails (e.g. a header with an unresolvable include), only that group is skipped — the rest survive. Priority headers always succeed or the entire build fails.
+
+Pass `--no-tree-headers` to skip the tree scan and use only the curated priority headers.
+
+Typical output: 20,000+ types (structs, unions, enums) in under 20 seconds.
 
 The kernel source tree must have `make defconfig && make prepare` run first (or pass `--kernel-config` pointing to a `.config` or `autoconf.h`).
 

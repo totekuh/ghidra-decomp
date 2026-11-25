@@ -362,7 +362,9 @@ def test_combined_option_is_forwarded(tmp_path, monkeypatch, argument, expected)
     def fake_decompile_binary(*args, **kwargs):
         received.append(kwargs["combined"])
 
-    monkeypatch.setattr("ghidra_decomp.cli.decompile_binary", fake_decompile_binary)
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.main_cmd.decompile_binary", fake_decompile_binary
+    )
     arguments = [str(binary)]
     if argument is not None:
         arguments.append(argument)
@@ -383,7 +385,9 @@ def test_pcode_option_is_forwarded(tmp_path, monkeypatch, argument, expected):
     def fake_decompile_binary(*args, **kwargs):
         received.append(kwargs["pcode"])
 
-    monkeypatch.setattr("ghidra_decomp.cli.decompile_binary", fake_decompile_binary)
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.main_cmd.decompile_binary", fake_decompile_binary
+    )
     arguments = [str(binary)]
     if argument is not None:
         arguments.append(argument)
@@ -504,7 +508,9 @@ def test_resume_option_is_forwarded(tmp_path, monkeypatch, arguments, expected):
     def fake_decompile_binary(*args, **kwargs):
         received.update(kwargs)
 
-    monkeypatch.setattr("ghidra_decomp.cli.decompile_binary", fake_decompile_binary)
+    monkeypatch.setattr(
+        "ghidra_decomp.cli.main_cmd.decompile_binary", fake_decompile_binary
+    )
 
     result = CliRunner().invoke(main, [str(binary), *arguments])
 
@@ -531,7 +537,7 @@ def test_worker_and_filter_options_are_forwarded(
     monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     received = {}
     monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
+        "ghidra_decomp.cli.main_cmd.decompile_binary",
         lambda *args, **kwargs: received.update(kwargs),
     )
 
@@ -559,7 +565,7 @@ def test_secondary_product_options_are_forwarded(tmp_path, monkeypatch):
     archive.write_bytes(b"archive")
     received = {}
     monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
+        "ghidra_decomp.cli.main_cmd.decompile_binary",
         lambda *args, **kwargs: received.update(kwargs),
     )
 
@@ -608,7 +614,7 @@ def test_verbose_analysis_option_is_forwarded(
     monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     received = {}
     monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
+        "ghidra_decomp.cli.main_cmd.decompile_binary",
         lambda *args, **kwargs: received.update(kwargs),
     )
 
@@ -633,7 +639,7 @@ def test_jvm_options_are_forwarded(tmp_path, monkeypatch, arguments, key, expect
     monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     received = {}
     monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
+        "ghidra_decomp.cli.main_cmd.decompile_binary",
         lambda *args, **kwargs: received.update(kwargs),
     )
 
@@ -656,7 +662,7 @@ def test_mermaid_option_is_forwarded(tmp_path, monkeypatch, arguments, expected)
     monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     received = {}
     monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
+        "ghidra_decomp.cli.main_cmd.decompile_binary",
         lambda *args, **kwargs: received.update(kwargs),
     )
 
@@ -679,7 +685,7 @@ def test_cpp_export_option_is_forwarded(tmp_path, monkeypatch, arguments, expect
     monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     received = {}
     monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
+        "ghidra_decomp.cli.main_cmd.decompile_binary",
         lambda *args, **kwargs: received.update(kwargs),
     )
 
@@ -718,7 +724,7 @@ def test_callgraph_query_options_are_forwarded(
     monkeypatch.delenv("GHIDRA_INSTALL_DIR", raising=False)
     received = {}
     monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
+        "ghidra_decomp.cli.main_cmd.decompile_binary",
         lambda *args, **kwargs: received.update(kwargs),
     )
 
@@ -736,7 +742,7 @@ def test_pdb_auto_is_forwarded(tmp_path, monkeypatch):
     binary.write_bytes(b"input")
     received = {}
     monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
+        "ghidra_decomp.cli.main_cmd.decompile_binary",
         lambda *args, **kwargs: received.update(kwargs),
     )
     result = CliRunner().invoke(main, [str(binary), "--pdb", "auto"])
@@ -749,7 +755,7 @@ def test_pdb_none_is_forwarded(tmp_path, monkeypatch):
     binary.write_bytes(b"input")
     received = {}
     monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
+        "ghidra_decomp.cli.main_cmd.decompile_binary",
         lambda *args, **kwargs: received.update(kwargs),
     )
     result = CliRunner().invoke(main, [str(binary), "--pdb", "none"])
@@ -764,7 +770,7 @@ def test_pdb_path_is_forwarded(tmp_path, monkeypatch):
     pdb.write_bytes(b"pdb content")
     received = {}
     monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
+        "ghidra_decomp.cli.main_cmd.decompile_binary",
         lambda *args, **kwargs: received.update(kwargs),
     )
     result = CliRunner().invoke(main, [str(binary), "--pdb", str(pdb)])
@@ -777,7 +783,7 @@ def test_pdb_defaults_to_none_when_omitted(tmp_path, monkeypatch):
     binary.write_bytes(b"input")
     received = {}
     monkeypatch.setattr(
-        "ghidra_decomp.cli.decompile_binary",
+        "ghidra_decomp.cli.main_cmd.decompile_binary",
         lambda *args, **kwargs: received.update(kwargs),
     )
     result = CliRunner().invoke(main, [str(binary)])

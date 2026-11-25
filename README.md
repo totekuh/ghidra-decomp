@@ -82,6 +82,31 @@ The pipeline discovers ~66 curated kernel headers, preprocesses them with `gcc -
 
 The kernel source tree must have `make defconfig && make prepare` run first (or pass `--kernel-config` pointing to a `.config` or `autoconf.h`).
 
+### Struct Type Inference
+
+When decompiling a stripped binary with `--gdt`, Ghidra creates auto-generated structs (`_struct_param_1`, `astruct_2`, etc.) with only the field offsets it observes. The `--struct-map` output now matches these offset patterns against named GDT structs to infer the original type.
+
+For each auto-generated struct, if every observed offset matches a field boundary in a named GDT struct, `struct_map.json` annotates the match:
+
+```json
+{
+  "_struct_param_1": {
+    "fields": [{"name": "field_0xdb", "offset": 219, "size": 1, "type": "undefined"}],
+    "inferred_type": "mwifiex_private",
+    "inferred_fields": [{"name": "adapter", "offset": 0, "size": 8, "type": "mwifiex_adapter *"}, "..."],
+    "inferred_size": 8192,
+    "inference_candidates": 1
+  }
+}
+```
+
+- `inferred_type` — matched GDT struct name
+- `inferred_fields` — full field layout from the GDT struct
+- `inferred_size` — size of the matched struct in bytes
+- `inference_candidates` — number of GDT structs that matched (1 = unambiguous)
+
+When multiple structs match, the smallest (most specific) is chosen.
+
 ## Polish
 
 By default, decompiled pseudocode is run through a post-processing pipeline that

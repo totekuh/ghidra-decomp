@@ -41,7 +41,7 @@ from .artifacts import (
     validate_destination,
 )
 from .pcode import serialize_high_function_with_context
-from .struct_map import build_struct_map, filter_referenced_types
+from .struct_map import build_struct_map, filter_referenced_types, infer_struct_types
 
 PROJECT_NAME = "project"
 
@@ -1812,6 +1812,7 @@ def _export_all(
             alloc_entries=all_alloc_entries,
             function_records=records,
         )
+        filtered = infer_struct_types(filtered, raw_struct_map)
         struct_map_path = output / "struct_map.json"
         atomic_write_json(struct_map_path, filtered)
         indexed_paths.append(struct_map_path)

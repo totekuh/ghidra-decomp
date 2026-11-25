@@ -207,7 +207,7 @@ COMPAT_SHIM = """\
 #define __builtin_types_compatible_p(a, b) 0
 #define __builtin_constant_p(x) 0
 #define __builtin_expect(x, v) (x)
-#define __builtin_choose_expr(c, t, f) (t)
+#define __builtin_choose_expr(c, t, f) t
 #define __builtin_clz(x) 0
 #define __builtin_clzl(x) 0
 #define __builtin_clzll(x) 0

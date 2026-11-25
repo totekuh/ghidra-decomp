@@ -183,46 +183,109 @@ def _strip_function_bodies(text: str) -> str:
     return "".join(out)
 
 
-def _simplify_complex_exprs(text: str) -> str:
-    """Clean up expressions CParser can't handle.
+_TYPE_START_RE = re.compile(
+    r"(?:(?:extern|static|const|volatile|inline)\s+)*"
+    r"(?:typedef|struct|union|enum)\b"
+)
+_FORWARD_DECL_RE = re.compile(
+    r"^(?:(?:extern|static|const|volatile|inline)\s+)*"
+    r"(?:struct|union|enum)\s+\w+\s*;$"
+)
 
-    - Strip static variable declarations (CParser only needs type defs)
-    - Replace complex array dimensions (containing function calls) with [1]
-    - Normalize integer literal suffixes (1LU -> 1UL, etc.)
-    - Strip lines with bare = ; left by body stripping
+
+def _strip_non_type_statements(text: str) -> str:
+    """Keep only type definitions; drop all other top-level statements.
+
+    Scans character-by-character to identify statement boundaries
+    (top-level ``;``) while tracking brace depth for struct/enum bodies.
+    Each top-level statement is kept only if it starts with a type
+    keyword (typedef/struct/union/enum, with optional qualifiers).
+    Preprocessor directives (``#``) are always kept.
     """
-    lines = text.split("\n")
-    out: list[str] = []
-    skip_until_semi = False
+    result: list[str] = []
+    stmt_start = 0
+    brace_depth = 0
+    i = 0
+    length = len(text)
 
-    for line in lines:
-        stripped = line.strip()
+    while i < length:
+        ch = text[i]
+        if ch == "{":
+            brace_depth += 1
+        elif ch == "}":
+            brace_depth -= 1
+            if brace_depth == 0:
+                close_semi = text.find(";", i)
+                if close_semi == -1:
+                    close_semi = length - 1
+                stmt = text[stmt_start : close_semi + 1]
+                leading = stmt.lstrip()
+                if _TYPE_START_RE.match(leading) or leading.startswith(("}", "#")):
+                    result.append(stmt)
+                stmt_start = close_semi + 1
+                i = stmt_start
+                continue
+        elif ch == ";" and brace_depth == 0:
+            stmt = text[stmt_start : i + 1]
+            leading = stmt.lstrip()
+            if leading.startswith(("typedef ", "#")) or _FORWARD_DECL_RE.match(
+                leading.strip()
+            ):
+                result.append(stmt)
+            stmt_start = i + 1
+        i += 1
 
-        if skip_until_semi:
-            if ";" in stripped:
-                skip_until_semi = False
-            continue
+    tail = text[stmt_start:]
+    if tail.strip():
+        leading = tail.lstrip()
+        if _TYPE_START_RE.match(leading) or leading.startswith("#"):
+            result.append(tail)
 
-        if stripped.startswith("static ") and "struct " not in stripped[:30]:
-            if ";" not in stripped:
-                skip_until_semi = True
-            continue
+    return "".join(result)
 
-        if "= ;" in stripped:
-            continue
 
-        if stripped == ";":
-            continue
+def _simplify_complex_exprs(text: str) -> str:
+    """Clean preprocessed C for Ghidra's CParser.
 
-        out.append(line)
-
-    text = "\n".join(out)
-    text = re.sub(
-        r"\[([^\[\]]*\([^\[\]]*\)[^\[\]]*)\]",
-        "[1]",
-        text,
-    )
+    1. Keep only type definitions (typedef/struct/union/enum).
+    2. Simplify complex array dimensions.
+    3. Normalize integer literal suffixes.
+    """
+    text = _strip_non_type_statements(text)
+    text = _simplify_array_dims(text)
     text = re.sub(r"\b(\d+)LU\b", r"\1UL", text)
     text = re.sub(r"\b(\d+)LLU\b", r"\1ULL", text)
-    text = re.sub(r";\s*;", ";", text)
     return text
+
+
+def _simplify_array_dims(text: str) -> str:
+    """Replace complex array dimensions with [1].
+
+    Handles nested parentheses that a simple regex cannot match.
+    Any [...] containing a '(' is replaced with [1].
+    """
+    result: list[str] = []
+    i = 0
+    length = len(text)
+    while i < length:
+        if text[i] == "[":
+            j = i + 1
+            depth = 1
+            has_paren = False
+            while j < length and depth > 0:
+                if text[j] == "[":
+                    depth += 1
+                elif text[j] == "]":
+                    depth -= 1
+                elif text[j] == "(":
+                    has_paren = True
+                j += 1
+            if has_paren and depth == 0:
+                result.append("[1]")
+            else:
+                result.append(text[i:j])
+            i = j
+        else:
+            result.append(text[i])
+            i += 1
+    return "".join(result)

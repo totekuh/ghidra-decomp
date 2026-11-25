@@ -53,6 +53,16 @@ def parse_and_export_gdt(
             open_archives, filenames, include_dirs, str(gdt_file), monitor
         )
     except Exception as exc:
+        import re as _re
+
+        match = _re.search(r"near line (\d+)", str(exc))
+        if match:
+            line_num = int(match.group(1))
+            lines = preprocessed_path.read_text(encoding="utf-8").splitlines()
+            start = max(0, line_num - 5)
+            end = min(len(lines), line_num + 5)
+            context = "\n".join(f"{i + 1:6d}: {lines[i]}" for i in range(start, end))
+            click.echo(f"CParser context around line {line_num}:\n{context}", err=True)
         raise KernelGdtError(f"CParser failed: {exc}") from exc
 
     if fdtm is None:

@@ -365,10 +365,18 @@ def build_gcc_command(
         kernel_src / "include" / "asm-generic",
     ]
 
+    gcc_internal = subprocess.run(
+        ["gcc", "-print-file-name=include"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
     cmd = ["gcc", "-E", "-nostdinc", "-P", "-w"]
 
     for inc in include_dirs:
         cmd.extend(["-I", str(inc)])
+    cmd.extend(["-isystem", gcc_internal])
 
     cmd.extend(["-include", str(compat_shim_path)])
     cmd.append(str(amalgamation_path))

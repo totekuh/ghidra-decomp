@@ -9,6 +9,7 @@ on:
 env:
   GHIDRA_VERSION: "12.2"
   GHIDRA_DATE: "20261016"
+  KERNEL_VERSION: "6.1.119"
 
 jobs:
   lint:
@@ -61,6 +62,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install kernel build deps
+        run: sudo apt-get update && sudo apt-get install -y bc flex bison libelf-dev libssl-dev
+
       - name: Cache Ghidra
         id: cache-ghidra
         uses: actions/cache@v4
@@ -71,9 +75,28 @@ jobs:
       - name: Install Ghidra
         if: steps.cache-ghidra.outputs.cache-hit != 'true'
         run: |
-          curl -sLO "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip"
-          unzip -q "ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip" -d /opt
+          curl -fSL -o ghidra.zip "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip"
+          unzip -q ghidra.zip -d /opt
           mv "/opt/ghidra_${GHIDRA_VERSION}_PUBLIC" /opt/ghidra
+
+      - name: Cache kernel source
+        id: cache-kernel
+        uses: actions/cache@v4
+        with:
+          path: /tmp/kernel-source-cache
+          key: kernel-${{ env.KERNEL_VERSION }}-prepared
+
+      - name: Download and prepare kernel source
+        if: steps.cache-kernel.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/kernel-source-cache
+          curl -fSL -o /tmp/kernel-source-cache/linux-${KERNEL_VERSION}.tar.xz \
+            "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz"
+          tar xf /tmp/kernel-source-cache/linux-${KERNEL_VERSION}.tar.xz -C /tmp/kernel-source-cache
+          cd /tmp/kernel-source-cache/linux-${KERNEL_VERSION}
+          make defconfig
+          make prepare
+          touch .prepared
 
       - run: pip install . pytest
       - name: E2E tests

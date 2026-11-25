@@ -195,7 +195,13 @@ def test_build_amalgamation_no_config(fake_kernel_tree: Path):
 # ── build_gcc_command ─────────────────────────────────────────────────
 
 
-def test_build_gcc_command_starts_with_gcc(tmp_path: Path):
+_GCC_INCLUDE = SimpleNamespace(
+    stdout="/usr/lib/gcc/x86_64-linux-gnu/12/include\n", returncode=0
+)
+
+
+@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+def test_build_gcc_command_starts_with_gcc(_mock, tmp_path: Path):
     cmd = build_gcc_command(
         tmp_path, "x86_64", tmp_path / "kernel_types.h", tmp_path / "compat.h"
     )
@@ -204,7 +210,8 @@ def test_build_gcc_command_starts_with_gcc(tmp_path: Path):
     assert "-nostdinc" in cmd
 
 
-def test_build_gcc_command_arch_include_paths(tmp_path: Path):
+@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+def test_build_gcc_command_arch_include_paths(_mock, tmp_path: Path):
     cmd = build_gcc_command(
         tmp_path, "x86_64", tmp_path / "kernel_types.h", tmp_path / "compat.h"
     )
@@ -212,7 +219,8 @@ def test_build_gcc_command_arch_include_paths(tmp_path: Path):
     assert f"{tmp_path}/arch/x86/include" in cmd_str
 
 
-def test_build_gcc_command_arm64_arch_path(tmp_path: Path):
+@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+def test_build_gcc_command_arm64_arch_path(_mock, tmp_path: Path):
     cmd = build_gcc_command(
         tmp_path, "arm64", tmp_path / "kernel_types.h", tmp_path / "compat.h"
     )
@@ -220,65 +228,85 @@ def test_build_gcc_command_arm64_arch_path(tmp_path: Path):
     assert f"{tmp_path}/arch/arm64/include" in cmd_str
 
 
-def test_build_gcc_command_includes_compat_shim(tmp_path: Path):
+@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+def test_build_gcc_command_includes_compat_shim(_mock, tmp_path: Path):
     compat = tmp_path / "compat.h"
     cmd = build_gcc_command(tmp_path, "x86_64", tmp_path / "kernel_types.h", compat)
     idx = cmd.index("-include")
     assert cmd[idx + 1] == str(compat)
 
 
-def test_build_gcc_command_ends_with_amalgamation(tmp_path: Path):
+@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+def test_build_gcc_command_ends_with_amalgamation(_mock, tmp_path: Path):
     amal = tmp_path / "kernel_types.h"
     cmd = build_gcc_command(tmp_path, "x86_64", amal, tmp_path / "compat.h")
     assert cmd[-1] == str(amal)
+
+
+@patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=_GCC_INCLUDE)
+def test_build_gcc_command_has_isystem(_mock, tmp_path: Path):
+    cmd = build_gcc_command(
+        tmp_path, "x86_64", tmp_path / "kernel_types.h", tmp_path / "compat.h"
+    )
+    idx = cmd.index("-isystem")
+    assert "/gcc/" in cmd[idx + 1]
 
 
 # ── preprocess_headers ────────────────────────────────────────────────
 
 
 def test_preprocess_headers_success(tmp_path: Path):
-    fake_result = SimpleNamespace(
-        returncode=0, stdout="typedef int __u32;\n", stderr=""
-    )
-    with patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=fake_result):
+    ok_result = SimpleNamespace(returncode=0, stdout="typedef int __u32;\n", stderr="")
+    calls = [_GCC_INCLUDE, ok_result]
+    with patch("ghidra_decomp.kernel_gdt.subprocess.run", side_effect=calls):
         result = preprocess_headers(tmp_path, "x86_64", "/* test */", tmp_path)
     assert result.is_file()
     assert "typedef int __u32;" in result.read_text()
 
 
 def test_preprocess_headers_gcc_not_found(tmp_path: Path):
+    call_count = 0
+
+    def _side_effect(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _GCC_INCLUDE
+        raise FileNotFoundError("gcc")
+
     with (
-        patch(
-            "ghidra_decomp.kernel_gdt.subprocess.run",
-            side_effect=FileNotFoundError("gcc"),
-        ),
+        patch("ghidra_decomp.kernel_gdt.subprocess.run", side_effect=_side_effect),
         pytest.raises(KernelGdtError, match="gcc not found"),
     ):
         preprocess_headers(tmp_path, "x86_64", "/* test */", tmp_path)
 
 
 def test_preprocess_headers_gcc_failure(tmp_path: Path):
-    fake_result = SimpleNamespace(
+    fail_result = SimpleNamespace(
         returncode=1, stdout="", stderr="fatal error: file not found\n"
     )
+    calls = [_GCC_INCLUDE, fail_result]
+
     with (
-        patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=fake_result),
+        patch("ghidra_decomp.kernel_gdt.subprocess.run", side_effect=calls),
         pytest.raises(KernelGdtError, match="gcc preprocessing failed"),
     ):
         preprocess_headers(tmp_path, "x86_64", "/* test */", tmp_path)
 
 
 def test_preprocess_headers_writes_amalgamation(tmp_path: Path):
-    fake_result = SimpleNamespace(returncode=0, stdout="/* output */\n", stderr="")
-    with patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=fake_result):
+    ok_result = SimpleNamespace(returncode=0, stdout="/* output */\n", stderr="")
+    calls = [_GCC_INCLUDE, ok_result]
+    with patch("ghidra_decomp.kernel_gdt.subprocess.run", side_effect=calls):
         preprocess_headers(tmp_path, "x86_64", "#define TEST 1\n", tmp_path)
     assert (tmp_path / "kernel_types.h").is_file()
     assert "#define TEST 1" in (tmp_path / "kernel_types.h").read_text()
 
 
 def test_preprocess_headers_writes_compat_shim(tmp_path: Path):
-    fake_result = SimpleNamespace(returncode=0, stdout="/* output */\n", stderr="")
-    with patch("ghidra_decomp.kernel_gdt.subprocess.run", return_value=fake_result):
+    ok_result = SimpleNamespace(returncode=0, stdout="/* output */\n", stderr="")
+    calls = [_GCC_INCLUDE, ok_result]
+    with patch("ghidra_decomp.kernel_gdt.subprocess.run", side_effect=calls):
         preprocess_headers(tmp_path, "x86_64", "/* test */", tmp_path)
     assert (tmp_path / "ghidra_compat.h").is_file()
     assert "__attribute__" in (tmp_path / "ghidra_compat.h").read_text()

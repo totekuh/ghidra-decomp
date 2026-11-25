@@ -322,44 +322,77 @@ class TestCliSubprocess:
 # ── Real kernel source tree tests ────────────────────────────────────
 
 KERNEL_CACHE_DIR = Path("/tmp/kernel-source-cache")
-KERNEL_VERSION = "linux-source-7.2"
+KERNEL_DOWNLOAD_VER = "6.1.119"
+KERNEL_DOWNLOAD_URL = (
+    f"https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-{KERNEL_DOWNLOAD_VER}.tar.xz"
+)
+
+
+def _find_local_tarball() -> Path | None:
+    """Find a linux-source tarball under /usr/src (Debian/Kali)."""
+    import glob
+
+    hits = sorted(glob.glob("/usr/src/linux-source-*.tar.xz"))
+    return Path(hits[-1]) if hits else None
 
 
 def _ensure_real_kernel_tree() -> Path:
-    """Return path to a prepared kernel source tree, downloading if needed."""
-    kernel_dir = KERNEL_CACHE_DIR / KERNEL_VERSION
-    prepared = kernel_dir / ".prepared"
+    """Return path to a prepared kernel source tree, downloading if needed.
 
-    if prepared.is_file():
-        return kernel_dir
-
-    tarball = Path(f"/usr/src/{KERNEL_VERSION}.tar.xz")
-    if not tarball.is_file():
-        pytest.skip(f"kernel tarball not found: {tarball}")
+    Checks for already-prepared cached tree first, then local Debian/Kali
+    tarball, then downloads from kernel.org. Never skips.
+    """
+    # Check for any already-prepared tree in cache
+    if KERNEL_CACHE_DIR.is_dir():
+        for child in sorted(KERNEL_CACHE_DIR.iterdir()):
+            if child.is_dir() and (child / ".prepared").is_file():
+                return child
 
     KERNEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    local = _find_local_tarball()
+    if local is not None:
+        tarball = local
+    else:
+        tarball = KERNEL_CACHE_DIR / f"linux-{KERNEL_DOWNLOAD_VER}.tar.xz"
+        if not tarball.is_file():
+            subprocess.run(
+                ["curl", "-fSL", "-o", str(tarball), KERNEL_DOWNLOAD_URL],
+                check=True,
+                timeout=600,
+            )
+
     subprocess.run(
         ["tar", "xf", str(tarball), "-C", str(KERNEL_CACHE_DIR)],
         check=True,
-        timeout=120,
+        timeout=300,
     )
+
+    # Find the extracted directory (name varies by distro tarball vs kernel.org)
+    dirs = [
+        d
+        for d in sorted(KERNEL_CACHE_DIR.iterdir())
+        if d.is_dir() and (d / "include" / "linux").is_dir()
+    ]
+    assert dirs, f"No kernel source directory found after extracting {tarball}"
+    kernel_dir = dirs[-1]
 
     subprocess.run(
         ["make", "defconfig"],
         cwd=str(kernel_dir),
         check=True,
         capture_output=True,
-        timeout=120,
+        timeout=300,
     )
     subprocess.run(
         ["make", "prepare"],
         cwd=str(kernel_dir),
         check=True,
         capture_output=True,
-        timeout=120,
+        timeout=300,
     )
 
-    prepared.touch()
+    (kernel_dir / ".prepared").touch()
     return kernel_dir
 
 

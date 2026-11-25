@@ -203,26 +203,6 @@ A type is included when it appears as `struct_type` on an alloc_map entry, as
 - Pairs with `alloc_map.json` to give downstream tools field-level layout needed
   for struct-field overflow detection.
 
-### Struct type inference
-
-When a GDT is loaded (`--gdt`), Ghidra creates auto-generated structs for parameters
-it cannot type (e.g. `_struct_param_1`, `astruct_2`). These contain only the field
-offsets observed during decompilation. The struct map matches these offset patterns
-against named GDT structs: if every observed offset is a field boundary in a named
-struct, the match is recorded.
-
-Auto-generated entries gain these additional fields when a match is found:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `inferred_type` | string | Name of the matched GDT struct |
-| `inferred_fields` | array | Full field layout from the GDT struct |
-| `inferred_size` | int | Size of the matched struct in bytes |
-| `inference_candidates` | int | Number of GDT structs that matched (1 = unambiguous) |
-
-When multiple structs match, the smallest (most specific) is chosen. The original
-`fields` array (what Ghidra observed) is preserved alongside `inferred_fields`.
-
 ## Type records
 
 Every type record says where it came from, how it is laid out, and who uses it, so a

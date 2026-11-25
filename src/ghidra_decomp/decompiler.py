@@ -41,6 +41,7 @@ from .artifacts import (
     validate_destination,
 )
 from .pcode import serialize_high_function_with_context
+from .struct_map import build_struct_map, filter_referenced_types
 
 PROJECT_NAME = "project"
 
@@ -732,6 +733,7 @@ def decompile_binary(
     aggressive: bool = False,
     max_payload_mb: int | None = None,
     alloc_map: bool = False,
+    struct_map: bool = False,
     alloc_map_config: Path | None = None,
 ) -> None:
     """Decompile a binary and write structured output."""
@@ -905,6 +907,7 @@ def decompile_binary(
                     combined=combined,
                     pcode=pcode,
                     alloc_map=alloc_map,
+                    struct_map=struct_map,
                     alloc_map_config=alloc_map_config,
                     requested_analysis=requested_analysis,
                     request_fingerprint=request_fingerprint,
@@ -1454,6 +1457,7 @@ def _export_all(
     combined: bool = False,
     pcode: bool = False,
     alloc_map: bool = False,
+    struct_map: bool = False,
     alloc_map_config: Path | None = None,
     requested_analysis: dict,
     request_fingerprint: dict,
@@ -1801,6 +1805,17 @@ def _export_all(
         atomic_write_json(alloc_map_path, alloc_map_data)
         indexed_paths.append(alloc_map_path)
         secondary["alloc_map"] = str(alloc_map_path.relative_to(output))
+    if struct_map:
+        raw_struct_map = build_struct_map(types)
+        filtered = filter_referenced_types(
+            raw_struct_map,
+            alloc_entries=all_alloc_entries,
+            function_records=records,
+        )
+        struct_map_path = output / "struct_map.json"
+        atomic_write_json(struct_map_path, filtered)
+        indexed_paths.append(struct_map_path)
+        secondary["struct_map"] = str(struct_map_path.relative_to(output))
     if gzf:
         gzf_path = output / "program.gzf"
         _export_gzf(program, gzf_path)

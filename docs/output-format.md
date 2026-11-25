@@ -143,6 +143,9 @@ specs.
   (two-arg product, e.g. calloc), or `"unknown"` (implicit/unresolvable).
 - **`size_vn`** — when `size_expr` is `"variable"`, the varnode id in this
   function's pcode that holds the size, for backward slicing.
+- **`struct_type`** — when the allocator's return value is cast to or stored into a
+  known struct pointer type, the struct name (e.g. `"mwifiex_private"`); `null`
+  when the output is untyped or not a struct pointer.
 - **`stores`** — where the allocation result pointer is written: `"field"` (struct
   field at a fixed offset), `"global"` (known address), or `"array"` (indexed store).
 - **`forwarded_to`** — functions the result pointer is passed to as an argument.
@@ -159,6 +162,46 @@ for direct allocator calls.
 Multi-path wrappers are supported: a function with up to 4 allocator call sites
 qualifies when every site is store-free, returns its result, and derives the same
 size spec. Unwrap depth is uncapped with cycle protection.
+
+## Struct map (`--struct-map`)
+
+With `--struct-map`, the export produces `struct_map.json` recording every resolved
+struct and union type referenced by decompiled code. The flag implies `--alloc-map`
+(which implies `--pcode`).
+
+A type is included when it appears as `struct_type` on an alloc_map entry, as
+`base_type` on a store, or in function signatures (parameters, locals, return types).
+
+```json
+{
+  "schema_version": 1,
+  "structs": {
+    "mwifiex_private": {
+      "size": 8192,
+      "kind": "struct",
+      "fields": [
+        {"name": "adapter", "size": 8, "type": "mwifiex_adapter *", "offset": 0},
+        {"name": "wmm_ie", "size": 50, "type": "IEEEtypes_WmmParameter_t", "offset": 498},
+        {"name": "wmm_enabled", "size": 1, "type": "uint8_t", "offset": 548}
+      ]
+    },
+    "net_data": {
+      "size": 8,
+      "kind": "union",
+      "fields": [
+        {"name": "raw", "size": 8, "type": "uint8_t[8]"},
+        {"name": "value", "size": 8, "type": "uint64_t"}
+      ]
+    }
+  }
+}
+```
+
+- Struct fields are sorted by `offset`. Union fields have no offset.
+- Only struct/union kinds are included; enums, typedefs, and function definitions
+  are filtered out.
+- Pairs with `alloc_map.json` to give downstream tools field-level layout needed
+  for struct-field overflow detection.
 
 ## Type records
 

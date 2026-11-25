@@ -57,6 +57,7 @@ def test_alloc_map_entries_have_required_fields(alloc_corpus):
         assert "size_expr" in entry
         assert "stores" in entry
         assert "returns" in entry
+        assert "struct_type" in entry
 
 
 def test_existing_pcode_output_still_present(alloc_corpus):

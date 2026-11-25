@@ -34,6 +34,7 @@ ghidra-decomp ./firmware.bin -o ./firmware_decomp
 | `--pcode` | Also emit `<function>.pcode.json` per function: SSA high-pcode ops, def-use, block CFG, varnode storage, and resolved call arguments | off |
 | `--alloc-map` | Emit `alloc_map.json` recording every allocation call site, where the result pointer is stored, and how it flows forward. Detects allocator wrappers and resolves sizes through wrapper chains. Implies `--pcode`. | off |
 | `--alloc-map-config` | JSON file extending the built-in allocator list for `--alloc-map` | none |
+| `--struct-map` | Emit `struct_map.json` recording every resolved struct/union type referenced by decompiled code, with field layouts sorted by offset. Implies `--alloc-map`. | off |
 | `--version` | Print version and exit | |
 | `--ghidra-path` | Path to Ghidra install | `$GHIDRA_INSTALL_DIR` |
 | `--base-addr` | Rebase binary to this address before analysis | none |
@@ -90,6 +91,7 @@ firmware_decomp/
 ├── program.gzf         # --gzf
 ├── semgrep.sarif       # --semgrep-config
 ├── alloc_map.json      # --alloc-map
+├── struct_map.json     # --struct-map
 ├── types.json
 ├── functions.json
 ├── callgraph.json

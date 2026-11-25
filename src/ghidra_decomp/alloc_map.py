@@ -75,6 +75,7 @@ DEFAULT_ALLOCATORS: dict[str, dict[str, Any] | None] = {
     "devm_kzalloc": {"index": 1},
     "devm_kcalloc": {"product": [1, 2]},
     "kmem_cache_alloc": None,
+    "kmem_cache_alloc_trace": {"index": 2},
     "kmem_cache_zalloc": None,
     "__kmalloc": {"index": 0},
     "kmalloc_node": {"index": 0},
@@ -852,6 +853,25 @@ def _specs_equivalent(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return False
 
 
+def _extract_struct_type(output_vn) -> str | None:
+    """Extract struct type name when an allocation output is typed as pointer-to-struct."""
+    try:
+        high = output_vn.getHigh()
+        if high is None:
+            return None
+        dt = high.getDataType()
+        if dt is None:
+            return None
+        type_name = dt.getName()
+        if type_name.endswith(" *"):
+            return type_name[:-2]
+        if type_name.endswith("*"):
+            return type_name[:-1].rstrip()
+    except Exception:  # noqa: BLE001, S110
+        pass
+    return None
+
+
 def build_alloc_entries(
     high_function,
     func,
@@ -901,9 +921,11 @@ def build_alloc_entries(
         stores: list[dict[str, Any]] = []
         p_to: list[dict[str, Any]] = []
         returned = False
+        struct_type: str | None = None
 
         if output_vn is not None:
             output_vn_id = namer.id_for(output_vn)
+            struct_type = _extract_struct_type(output_vn)
             stores, p_to, returned = _follow_output(
                 output_vn, ops_raw, namer, program, fm, seq
             )
@@ -927,6 +949,7 @@ def build_alloc_entries(
             "callee_addr": callee_addr,
             "call_seq": call_seq,
             **size_info,
+            "struct_type": struct_type,
             "unwrapped_via": None,
             "stores": stores,
             "returns": {

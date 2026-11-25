@@ -62,6 +62,14 @@ from .decompiler import (
     "result pointer is stored, and how it is forwarded. Implies --pcode.",
 )
 @click.option(
+    "--struct-map",
+    "struct_map",
+    is_flag=True,
+    default=False,
+    help="Emit struct_map.json recording every resolved struct/union type "
+    "referenced by decompiled functions. Implies --alloc-map and --pcode.",
+)
+@click.option(
     "--alloc-map-config",
     "alloc_map_config",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -253,6 +261,7 @@ def main(
     combined: bool,
     pcode: bool,
     alloc_map: bool,
+    struct_map: bool,
     alloc_map_config: Path | None,
     ghidra_path: Path | None,
     base_addr: str | None,
@@ -315,6 +324,8 @@ def main(
     if pdb is not None:
         click.echo(f"PDB:     {pdb}")
 
+    if struct_map:
+        alloc_map = True
     if alloc_map:
         pcode = True
 
@@ -325,6 +336,7 @@ def main(
         combined=combined,
         pcode=pcode,
         alloc_map=alloc_map,
+        struct_map=struct_map,
         alloc_map_config=alloc_map_config,
         ghidra_path=ghidra_path,
         base_addr=base_addr,

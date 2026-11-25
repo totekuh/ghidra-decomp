@@ -254,6 +254,26 @@ from .decompiler import (
     "large functions that otherwise fail to decompile. Default: Ghidra's "
     "built-in limit (~50MB).",
 )
+@click.option(
+    "--build-kernel-gdt",
+    "kernel_src",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Build a .gdt type archive from a Linux kernel source tree. "
+    "Requires --arch and -o.",
+)
+@click.option(
+    "--arch",
+    default=None,
+    help="Target architecture for --build-kernel-gdt "
+    "(x86_64, x86, arm, arm64, mips, riscv64, ppc).",
+)
+@click.option(
+    "--kernel-config",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Kernel .config or autoconf.h for --build-kernel-gdt.",
+)
 def main(
     binary: Path | None,
     output: Path | None,
@@ -289,6 +309,9 @@ def main(
     no_polish: bool,
     aggressive: bool,
     max_payload_mb: int | None,
+    kernel_src: Path | None,
+    arch: str | None,
+    kernel_config: Path | None,
 ):
     """Decompile BINARY into a browsable source tree.
 
@@ -297,6 +320,27 @@ def main(
     """
     if list_langs:
         list_languages(ghidra_path=ghidra_path)
+        return
+
+    if kernel_src is not None:
+        if output is None:
+            raise click.UsageError("--build-kernel-gdt requires -o.")
+        if arch is None:
+            raise click.UsageError("--build-kernel-gdt requires --arch.")
+        from .kernel_gdt import KernelGdtError, build_kernel_gdt
+
+        try:
+            stats = build_kernel_gdt(
+                kernel_src.resolve(),
+                arch,
+                output.resolve(),
+                config=kernel_config,
+                ghidra_path=ghidra_path,
+                max_ram_percent=max_ram_percent,
+            )
+        except KernelGdtError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"\nDone. {stats['types_count']} types exported to {output}")
         return
 
     if binary is None:

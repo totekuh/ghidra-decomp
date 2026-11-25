@@ -61,6 +61,26 @@ ghidra-decomp ./firmware.bin -o ./firmware_decomp
 | `--no-polish` | Skip the readability post-processing pipeline; emit raw Ghidra output | polish on |
 | `--aggressive` | Enable Ghidra's off-by-default Decompiler Parameter ID analyzer for better parameter/return types (slower) | off |
 | `--max-payload-mb` | Raise Ghidra's per-function decompiler payload cap (MB) to rescue very large functions | Ghidra default (~50MB) |
+| `--build-kernel-gdt` | Build a `.gdt` type archive from a Linux kernel source tree. Requires `--arch` and `-o`. | |
+| `--arch` | Target architecture for `--build-kernel-gdt` (`x86_64`, `x86`, `arm`, `arm64`, `mips`, `riscv64`, `ppc`) | |
+| `--kernel-config` | Kernel `.config` or `autoconf.h` for `--build-kernel-gdt` | auto-detect |
+
+## Kernel Type Archives
+
+Build a Ghidra `.gdt` type archive from a Linux kernel source tree so `--struct-map` works on stripped `.ko` files (no DWARF needed):
+
+```bash
+# Build once per kernel version:
+ghidra-decomp --build-kernel-gdt /usr/src/linux-source-6.1 \
+  --arch x86_64 -o linux-6.1-x86_64.gdt
+
+# Use on any .ko from that kernel:
+ghidra-decomp --struct-map --gdt linux-6.1-x86_64.gdt some_driver.ko
+```
+
+The pipeline discovers ~66 curated kernel headers, preprocesses them with `gcc -E`, strips GCC extensions, and feeds the result to Ghidra's CParser. Typical output: 20,000+ types (structs, unions, enums) in under 20 seconds.
+
+The kernel source tree must have `make defconfig && make prepare` run first (or pass `--kernel-config` pointing to a `.config` or `autoconf.h`).
 
 ## Polish
 

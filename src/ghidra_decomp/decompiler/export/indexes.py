@@ -6,13 +6,13 @@ from pathlib import Path
 
 import click
 
-from ... import __version__
-from ...alloc_map import (
+from ghidra_decomp import __version__
+from ghidra_decomp.alloc_map import (
     detect_wrappers_from_candidates,
     resolve_wrappers,
     serialize_alloc_map,
 )
-from ...artifacts import (
+from ghidra_decomp.artifacts import (
     SCHEMA_VERSION,
     atomic_write_chunks,
     atomic_write_json,
@@ -21,9 +21,13 @@ from ...artifacts import (
     fsync_tree,
     sha256_file,
 )
-from ...struct_map import build_struct_map, filter_referenced_types
-from ..constants import STATUS_FAILED, STATUS_FALLBACK
-from ..extract.functions import (
+from ghidra_decomp.decompiler.constants import STATUS_FAILED, STATUS_FALLBACK
+from ghidra_decomp.decompiler.export.secondary import (
+    _export_cpp,
+    _export_gzf,
+    _run_semgrep,
+)
+from ghidra_decomp.decompiler.extract.functions import (
     _extract_entry_points,
     _extract_exports,
     _extract_imports,
@@ -33,24 +37,24 @@ from ..extract.functions import (
     _extract_unowned_references,
     json_line,
 )
-from ..extract.types import _extract_types
-from ..graph.callgraph import (
+from ghidra_decomp.decompiler.extract.types import _extract_types
+from ghidra_decomp.decompiler.graph.callgraph import (
     _condense_graph,
     _find_all_paths,
     _find_endpoints,
     _is_reachable,
     _resolve_function,
 )
-from ..graph.mermaid import (
+from ghidra_decomp.decompiler.graph.mermaid import (
     _render_mermaid_condensed,
     _render_mermaid_function,
     _render_mermaid_neighborhood,
     _render_mermaid_paths,
     _render_mermaid_whole,
 )
-from ..naming import _artifact_stem
-from ..worker import _addresses_with_status, _summarize_statuses
-from .secondary import _export_cpp, _export_gzf, _run_semgrep
+from ghidra_decomp.decompiler.naming import _artifact_stem
+from ghidra_decomp.decompiler.worker import _addresses_with_status, _summarize_statuses
+from ghidra_decomp.struct_map import build_struct_map, filter_referenced_types
 
 
 def write_indexes_and_manifest(
@@ -287,7 +291,7 @@ def write_indexes_and_manifest(
         else:
             click.echo(f"Not reachable: {src_name} -> {dst_name}")
 
-    from ..setup.resume import normalize_filters
+    from ghidra_decomp.decompiler.setup.resume import normalize_filters
 
     manifest = {
         "schema_version": SCHEMA_VERSION,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..constants import TYPE_USAGE_LIMIT
+from ghidra_decomp.decompiler.constants import TYPE_USAGE_LIMIT
 
 
 def _category_path(dt) -> str:

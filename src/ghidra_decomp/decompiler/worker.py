@@ -8,10 +8,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import click
 
-from ..alloc_map import build_alloc_entries, build_wrapper_candidate
-from ..artifacts import SCHEMA_VERSION
-from ..pcode import serialize_high_function_with_context
-from .constants import STATUS_FAILED, STATUS_FALLBACK, STATUS_SUCCESS
+from ghidra_decomp.alloc_map import build_alloc_entries, build_wrapper_candidate
+from ghidra_decomp.artifacts import SCHEMA_VERSION
+from ghidra_decomp.decompiler.constants import (
+    STATUS_FAILED,
+    STATUS_FALLBACK,
+    STATUS_SUCCESS,
+)
+from ghidra_decomp.pcode import serialize_high_function_with_context
 
 
 def _failure_comment(error: object) -> str:
@@ -235,7 +239,7 @@ def _high_function_locals(result) -> list[dict]:
 def _high_local_record(symbol) -> dict:
     """Extract one local variable as the decompiler actually modelled it."""
     data_type = symbol.getDataType()
-    from .extract.functions import _storage_record
+    from ghidra_decomp.decompiler.extract.functions import _storage_record
 
     return {
         "name": symbol.getName(),

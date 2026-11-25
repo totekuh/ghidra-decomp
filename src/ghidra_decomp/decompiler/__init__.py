@@ -1,6 +1,6 @@
 """Core decompilation logic using pyghidra."""
 
-from .constants import (
+from ghidra_decomp.decompiler.constants import (
     PROJECT_NAME,
     STATUS_FAILED,
     STATUS_FALLBACK,
@@ -8,14 +8,14 @@ from .constants import (
     STATUSES,
     TYPE_USAGE_LIMIT,
 )
-from .export import (
+from ghidra_decomp.decompiler.export import (
     _export_cpp,
     _export_gzf,
     _run_semgrep,
     write_function_artifacts,
     write_indexes_and_manifest,
 )
-from .extract import (
+from ghidra_decomp.decompiler.extract import (
     _body_ranges,
     _disassemble_function,
     _extract_entry_points,
@@ -35,7 +35,7 @@ from .extract import (
     _variable_record,
     json_line,
 )
-from .extract.types import (
+from ghidra_decomp.decompiler.extract.types import (
     _alignment_record,
     _category_path,
     _packing_record,
@@ -44,7 +44,7 @@ from .extract.types import (
     _type_usage,
     _type_usage_index,
 )
-from .graph import (
+from ghidra_decomp.decompiler.graph import (
     _callgraph_predecessors,
     _callgraph_successors,
     _condense_graph,
@@ -61,9 +61,9 @@ from .graph import (
     _render_mermaid_whole,
     _resolve_function,
 )
-from .naming import _artifact_stem, _sanitize_name
-from .orchestrator import _export_all, decompile_binary
-from .setup import (
+from ghidra_decomp.decompiler.naming import _artifact_stem, _sanitize_name
+from ghidra_decomp.decompiler.orchestrator import _export_all, decompile_binary
+from ghidra_decomp.decompiler.setup import (
     _apply_gdts,
     _apply_pdb,
     _artifact_hashes_match,
@@ -83,7 +83,7 @@ from .setup import (
     normalize_filters,
     select_functions,
 )
-from .worker import (
+from ghidra_decomp.decompiler.worker import (
     _addresses_with_status,
     _decompile_functions,
     _decompile_one,

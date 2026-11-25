@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ...artifacts import SCHEMA_VERSION, sha256_file
-from ..constants import STATUS_SUCCESS
-from ..naming import _artifact_stem
+from ghidra_decomp.artifacts import SCHEMA_VERSION, sha256_file
+from ghidra_decomp.decompiler.constants import STATUS_SUCCESS
+from ghidra_decomp.decompiler.naming import _artifact_stem
 
 
 def normalize_filters(filters: dict | None) -> dict[str, list[str]]:

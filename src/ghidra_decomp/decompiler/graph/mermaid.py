@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from .callgraph import _neighborhood_bfs
+from ghidra_decomp.decompiler.graph.callgraph import _neighborhood_bfs
 
 
 def _mermaid_escape(text: str) -> str:

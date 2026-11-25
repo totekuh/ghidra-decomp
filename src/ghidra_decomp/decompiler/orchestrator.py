@@ -9,9 +9,9 @@ from pathlib import Path
 
 import click
 
-from .. import __version__
-from ..alloc_map import load_allocators
-from ..artifacts import (
+from ghidra_decomp import __version__
+from ghidra_decomp.alloc_map import load_allocators
+from ghidra_decomp.artifacts import (
     SCHEMA_VERSION,
     atomic_write_json,
     build_fingerprint,
@@ -24,12 +24,16 @@ from ..artifacts import (
     staging_prefix,
     validate_destination,
 )
-from .constants import PROJECT_NAME
-from .export.artifacts import write_function_artifacts
-from .export.indexes import write_indexes_and_manifest
-from .naming import _artifact_stem
-from .setup.filters import compile_filters, default_workers, select_functions
-from .setup.ghidra import (
+from ghidra_decomp.decompiler.constants import PROJECT_NAME
+from ghidra_decomp.decompiler.export.artifacts import write_function_artifacts
+from ghidra_decomp.decompiler.export.indexes import write_indexes_and_manifest
+from ghidra_decomp.decompiler.naming import _artifact_stem
+from ghidra_decomp.decompiler.setup.filters import (
+    compile_filters,
+    default_workers,
+    select_functions,
+)
+from ghidra_decomp.decompiler.setup.ghidra import (
     _apply_gdts,
     _apply_pdb,
     _build_vm_args,
@@ -39,8 +43,8 @@ from .setup.ghidra import (
     _run_analysis,
     _start_pyghidra,
 )
-from .setup.resume import load_resume_index
-from .worker import _decompile_functions
+from ghidra_decomp.decompiler.setup.resume import load_resume_index
+from ghidra_decomp.decompiler.worker import _decompile_functions
 
 
 def _export_all(
@@ -230,7 +234,7 @@ def decompile_binary(
             )
         gdt_identity.append({"path": str(path), "sha256": sha256_file(path)})
 
-    from .. import pdb as _pdb_mod  # noqa: T100
+    from ghidra_decomp import pdb as _pdb_mod
 
     pdb_resolved_path: Path | None = None
     rsds_info = None

@@ -1,6 +1,6 @@
 """Callgraph algorithms and Mermaid rendering."""
 
-from .callgraph import (
+from ghidra_decomp.decompiler.graph.callgraph import (
     _callgraph_predecessors,
     _callgraph_successors,
     _condense_graph,
@@ -10,7 +10,7 @@ from .callgraph import (
     _neighborhood_bfs,
     _resolve_function,
 )
-from .mermaid import (
+from ghidra_decomp.decompiler.graph.mermaid import (
     _mermaid_escape,
     _mermaid_node_id,
     _render_mermaid_condensed,

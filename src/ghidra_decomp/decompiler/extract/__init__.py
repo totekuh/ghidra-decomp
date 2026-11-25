@@ -1,6 +1,6 @@
 """Ghidra metadata extraction: functions, program-wide, types."""
 
-from .functions import (
+from ghidra_decomp.decompiler.extract.functions import (
     _body_ranges,
     _disassemble_function,
     _extract_entry_points,
@@ -19,7 +19,7 @@ from .functions import (
     _variable_record,
     json_line,
 )
-from .types import (
+from ghidra_decomp.decompiler.extract.types import (
     _alignment_record,
     _category_path,
     _extract_types,

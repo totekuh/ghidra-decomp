@@ -183,7 +183,7 @@ def _apply_gdts(program, gdt_paths: tuple[str, ...]) -> list[dict]:
         finally:
             program.endTransaction(tid, success)
             archive.close()
-        from ..artifacts import sha256_file
+        from ghidra_decomp.artifacts import sha256_file
 
         applied.append({"path": str(path), "sha256": sha256_file(path)})
     return applied

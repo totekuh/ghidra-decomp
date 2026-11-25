@@ -7,22 +7,30 @@ from pathlib import Path
 
 import click
 
-from ...artifacts import (
+from ghidra_decomp.artifacts import (
     SCHEMA_VERSION,
     atomic_write_json,
     atomic_write_text,
     sha256_file,
 )
-from ..constants import STATUS_FAILED, STATUS_FALLBACK, STATUS_SUCCESS
-from ..extract.functions import (
+from ghidra_decomp.decompiler.constants import (
+    STATUS_FAILED,
+    STATUS_FALLBACK,
+    STATUS_SUCCESS,
+)
+from ghidra_decomp.decompiler.extract.functions import (
     _disassemble_function,
     _extract_function_record,
     _extract_function_references,
     _extract_strings,
     _extract_symbols,
 )
-from ..naming import _artifact_stem
-from ..worker import _decompiler_notes, _failure_comment, _func_header_comment
+from ghidra_decomp.decompiler.naming import _artifact_stem
+from ghidra_decomp.decompiler.worker import (
+    _decompiler_notes,
+    _failure_comment,
+    _func_header_comment,
+)
 
 
 def write_function_artifacts(
@@ -110,7 +118,7 @@ def write_function_artifacts(
             notes = _decompiler_notes(c_code)
             polished = False
             if status == STATUS_SUCCESS and polish:
-                from ..polish import polish as polish_code
+                from ghidra_decomp.polish import polish as polish_code
 
                 c_code, polished = polish_code(c_code)
             if status == STATUS_SUCCESS:

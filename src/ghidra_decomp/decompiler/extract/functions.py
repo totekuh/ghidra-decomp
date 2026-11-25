@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..worker import _thunk_target
+from ghidra_decomp.decompiler.worker import _thunk_target
 
 
 def _disassemble_function(program, func) -> str:
@@ -239,7 +239,7 @@ def _extract_function_record(
     return record
 
 
-from .program import (
+from ghidra_decomp.decompiler.extract.program import (
     _extract_entry_points,
     _extract_exports,
     _extract_imports,

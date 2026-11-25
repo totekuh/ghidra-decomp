@@ -1,12 +1,12 @@
 """Pre-decompilation setup: Ghidra JVM, function filtering, resume."""
 
-from .filters import (
+from ghidra_decomp.decompiler.setup.filters import (
     _selected_by_name,
     compile_filters,
     default_workers,
     select_functions,
 )
-from .ghidra import (
+from ghidra_decomp.decompiler.setup.ghidra import (
     _apply_gdts,
     _apply_pdb,
     _build_vm_args,
@@ -18,7 +18,7 @@ from .ghidra import (
     _start_pyghidra,
     list_languages,
 )
-from .resume import (
+from ghidra_decomp.decompiler.setup.resume import (
     _artifact_hashes_match,
     _reusable_function_artifacts,
     load_resume_index,

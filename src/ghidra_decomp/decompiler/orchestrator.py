@@ -234,39 +234,11 @@ def decompile_binary(
             )
         gdt_identity.append({"path": str(path), "sha256": sha256_file(path)})
 
-    from ghidra_decomp import pdb as _pdb_mod
+    from ghidra_decomp.pdb import resolve_pdb_option
 
-    pdb_resolved_path: Path | None = None
-    rsds_info = None
-    if pdb == "none":
-        pass
-    elif pdb == "auto":
-        rsds_info = _pdb_mod.parse_rsds(binary)
-        if rsds_info is not None:
-            click.echo(f"Detected PDB: {rsds_info.pdb_name} ({rsds_info.guid})")
-            pdb_resolved_path = _pdb_mod.fetch_pdb(rsds_info, _default_pdb_cache())
-            if pdb_resolved_path is not None:
-                click.echo(f"Fetched PDB:  {pdb_resolved_path}")
-            else:
-                click.echo("PDB not available on symbol server, continuing without.")
-    elif pdb is not None:
-        pdb_local = Path(pdb).expanduser().resolve()
-        if not pdb_local.is_file():
-            raise click.BadParameter(
-                f"PDB file not found: {pdb_local}", param_hint="'--pdb'"
-            )
-        pdb_resolved_path = pdb_local
-        rsds_info = _pdb_mod.parse_rsds(binary)
-    else:
-        rsds_info = _pdb_mod.parse_rsds(binary)
-        if rsds_info is not None and _pdb_mod.prompt_pdb_fetch(rsds_info):
-            pdb_resolved_path = _pdb_mod.fetch_pdb(rsds_info, _default_pdb_cache())
-            if pdb_resolved_path is not None:
-                click.echo(f"Fetched PDB:  {pdb_resolved_path}")
-            else:
-                click.echo("PDB not available on symbol server, continuing without.")
-
-    pdb_identity_data = _pdb_mod.pdb_identity(pdb_resolved_path, rsds_info)
+    pdb_resolved_path, _, pdb_identity_data = resolve_pdb_option(
+        binary, pdb, _default_pdb_cache()
+    )
 
     requested_analysis = {
         "base_address": base_addr,

@@ -227,6 +227,46 @@ def _download(url: str) -> bytes | None:
         return None
 
 
+def resolve_pdb_option(
+    binary: Path, pdb: str | None, cache_dir: Path
+) -> tuple[Path | None, RsdsInfo | None, dict | None]:
+    """Resolve the ``--pdb`` CLI option to a local path and identity record.
+
+    Returns ``(pdb_path, rsds_info, identity_dict)``.
+    """
+    pdb_resolved_path: Path | None = None
+    rsds_info: RsdsInfo | None = None
+    if pdb == "none":
+        pass
+    elif pdb == "auto":
+        rsds_info = parse_rsds(binary)
+        if rsds_info is not None:
+            click.echo(f"Detected PDB: {rsds_info.pdb_name} ({rsds_info.guid})")
+            pdb_resolved_path = fetch_pdb(rsds_info, cache_dir)
+            if pdb_resolved_path is not None:
+                click.echo(f"Fetched PDB:  {pdb_resolved_path}")
+            else:
+                click.echo("PDB not available on symbol server, continuing without.")
+    elif pdb is not None:
+        pdb_local = Path(pdb).expanduser().resolve()
+        if not pdb_local.is_file():
+            raise click.BadParameter(
+                f"PDB file not found: {pdb_local}", param_hint="'--pdb'"
+            )
+        pdb_resolved_path = pdb_local
+        rsds_info = parse_rsds(binary)
+    else:
+        rsds_info = parse_rsds(binary)
+        if rsds_info is not None and prompt_pdb_fetch(rsds_info):
+            pdb_resolved_path = fetch_pdb(rsds_info, cache_dir)
+            if pdb_resolved_path is not None:
+                click.echo(f"Fetched PDB:  {pdb_resolved_path}")
+            else:
+                click.echo("PDB not available on symbol server, continuing without.")
+
+    return pdb_resolved_path, rsds_info, pdb_identity(pdb_resolved_path, rsds_info)
+
+
 def _decompress_cab(cab_bytes: bytes) -> bytes | None:
     """Extract the first file from a CAB archive using cabextract."""
     if not shutil.which("cabextract"):

@@ -1,0 +1,54 @@
+name: Bug Report
+description: Report a bug in ghidra-decomp
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug. Include the full error message if there is one.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal command or script that triggers the bug.
+      placeholder: |
+        ghidra-decomp ./binary.elf -o ./out --pcode
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: ghidra-decomp version
+      placeholder: "1.5.3"
+    validations:
+      required: true
+  - type: input
+    id: ghidra-version
+    attributes:
+      label: Ghidra version
+      placeholder: "12.2"
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.12"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "Ubuntu 24.04 / macOS 15 / Windows 11"
+    validations:
+      required: false

@@ -169,6 +169,23 @@ docker compose run --rm ghidra-decomp ./firmware.bin -o /output/firmware_decomp
 3. **Re-run** with `--resume`, or narrow with `--include`/`--function`
 4. **Write back** renames/annotations to Ghidra via MCP (separate tool, not yet built)
 
+## Shell Completion
+
+Tab-complete flags and arguments in your shell:
+
+```bash
+# bash (add to ~/.bashrc)
+eval "$(_GHIDRA_DECOMP_COMPLETE=bash_source ghidra-decomp)"
+
+# zsh (add to ~/.zshrc)
+eval "$(_GHIDRA_DECOMP_COMPLETE=zsh_source ghidra-decomp)"
+
+# fish (add to ~/.config/fish/completions/ghidra-decomp.fish)
+_GHIDRA_DECOMP_COMPLETE=fish_source ghidra-decomp | source
+```
+
+Also works for `ghidra-decomp-query`.
+
 ## Docs
 
 - [Output format](docs/output-format.md) — artifact contract, sidecars, types, manifest

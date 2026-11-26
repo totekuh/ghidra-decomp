@@ -181,12 +181,26 @@ def _is_generic_pointer(type_name: str) -> bool:
     return stripped in _GENERIC_BASE_TYPES
 
 
+_DEBUG_SOURCES = frozenset({"User Defined", "Imported"})
+
+
 def _dwarf_param_types(func) -> dict[str, str]:
     """Map parameter names to their DWARF-declared type display names.
 
-    Returns an empty dict when no parameter metadata is available.
+    Only returns types when the function signature comes from debug info
+    (DWARF/PDB), not from Ghidra's decompiler analysis. Analysis-inferred
+    types vary with decompilation order and break determinism.
     """
     if func is None:
+        return {}
+    get_source = getattr(func, "getSignatureSource", None)
+    if get_source is None:
+        return {}
+    try:
+        source = str(get_source())
+    except Exception:  # noqa: BLE001
+        return {}
+    if source not in _DEBUG_SOURCES:
         return {}
     get_params = getattr(func, "getParameters", None)
     if get_params is None:

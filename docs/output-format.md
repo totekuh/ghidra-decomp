@@ -54,7 +54,7 @@ are folded. One envelope per function:
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "function": "RTMPDeFragmentDataFrame",
   "entry": "00087514",
   "body_ranges": [{"start": "00087514", "end": "000878ff"}],
@@ -77,7 +77,9 @@ are folded. One envelope per function:
 - **`varnodes`** — one entry per varnode that resolves to a recovered variable:
   its `highvar` name, `type`, `size`, and `storage` (storage comes from the
   variable's symbol; an unnamed temporary falls back to its architectural
-  register). Array types also carry `{"elem_size", "count"}`.
+  register). For parameters, when the decompiler infers a generic type
+  (`uchar *`, `void *`) but DWARF declares a struct pointer, the DWARF type
+  is used. Array types also carry `{"elem_size", "count"}`.
 - **`blocks`** — the pcode basic-block CFG (not the instruction CFG). Each block
   has its index, `start`/`end`, the `seq` indices of its `ops`, and `succ`/`pred`
   block indices. Loop back-edges are detected by DFS and reported both as a raw

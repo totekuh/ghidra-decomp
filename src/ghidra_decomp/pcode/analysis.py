@@ -47,7 +47,9 @@ def _varnode_map(ops: list, namer: _VarnodeNamer, program) -> list[dict[str, Any
             entry: dict[str, Any] = {
                 "vn": vid,
                 "highvar": _high_name(high),
-                "type": data_type.getName() if data_type is not None else "undefined",
+                "type": data_type.getDisplayName()
+                if data_type is not None
+                else "undefined",
                 "size": int(varnode.getSize()),
                 "storage": _high_storage(high, varnode, program),
             }
@@ -195,7 +197,9 @@ def _stack_locals(high_function) -> list[dict[str, Any]]:
         entry: dict[str, Any] = {
             "name": symbol.getName(),
             "storage": storage_record,
-            "type": data_type.getName() if data_type is not None else "undefined",
+            "type": data_type.getDisplayName()
+            if data_type is not None
+            else "undefined",
             "size": int(symbol.getSize()),
         }
         extent = _array_extent(data_type) if data_type is not None else None

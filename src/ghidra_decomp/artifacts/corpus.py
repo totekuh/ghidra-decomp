@@ -20,10 +20,10 @@ from .filesystem import (
     fsync_directory,
 )
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 CORPUS_OWNER = "ghidra-decomp"
 
-OWNED_SCHEMA_VERSIONS = frozenset({2, 3, 4, 5, 6, SCHEMA_VERSION})
+OWNED_SCHEMA_VERSIONS = frozenset({2, 3, 4, 5, 6, 7, SCHEMA_VERSION})
 
 
 @dataclass(frozen=True)

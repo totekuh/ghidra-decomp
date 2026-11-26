@@ -64,6 +64,26 @@ def test_pcode_sidecars_are_produced_and_registered(pcode_corpus):
         assert {"ops", "varnodes", "blocks", "calls"} <= set(payload)
 
 
+def test_pcode_schema_version_is_current(pcode_corpus):
+    for record in _pcode_records(pcode_corpus):
+        payload = json.loads(
+            (pcode_corpus / record["artifacts"]["pcode"]).read_text(encoding="utf-8")
+        )
+        assert payload["schema_version"] == 8
+
+
+def test_varnode_types_carry_pointer_markers(pcode_corpus):
+    """At least one varnode should have a pointer type with ' *' suffix."""
+    all_types: list[str] = []
+    for record in _pcode_records(pcode_corpus):
+        payload = json.loads(
+            (pcode_corpus / record["artifacts"]["pcode"]).read_text(encoding="utf-8")
+        )
+        all_types.extend(v["type"] for v in payload["varnodes"])
+    pointer_types = [t for t in all_types if " *" in t]
+    assert pointer_types, f"no pointer types found in varnodes; saw {set(all_types)}"
+
+
 def test_pcode_def_use_and_cfg_are_consistent(pcode_corpus):
     """An output id must be consumable as an input; block edges must be valid."""
     for record in _pcode_records(pcode_corpus):

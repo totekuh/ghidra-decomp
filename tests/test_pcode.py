@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from ghidra_decomp.pcode import serialize_high_function
 
-SCHEMA = 7
+SCHEMA = 8
 
 
 class FakeStorage:
@@ -44,13 +44,17 @@ class FakeStorage:
 
 
 class FakeDataType:
-    def __init__(self, name, *, elem_size=None, count=None):
+    def __init__(self, name, *, display_name=None, elem_size=None, count=None):
         self._name = name
+        self._display_name = display_name or name
         self._elem_size = elem_size
         self._count = count
 
     def getName(self):
         return self._name
+
+    def getDisplayName(self):
+        return self._display_name
 
     # Present only for array types; absence is how the serializer tells them apart.
     def getNumElements(self):
@@ -324,6 +328,21 @@ def test_varnode_map_resolves_highvariable_with_array_extent():
     assert entries["buf"]["storage"]["kind"] == "stack"
     assert entries["buf"]["storage"]["stack_offset"] == -72
     assert entries["buf"]["array"] == {"elem_size": 1, "count": 64}
+
+
+def test_varnode_type_includes_pointer_marker():
+    ptr_type = FakeDataType("my_struct", display_name="my_struct *")
+    high = FakeHighVariable("ptr", ptr_type, FakeStorage("register", "RDI"))
+    varnode = FakeVarnode(0x100, size=8, high=high)
+    op = FakeOp("COPY", FakeVarnode(0x200), [varnode])
+
+    payload = serialize_high_function(
+        fake_high_function([op]), fake_func(), fake_program(), schema_version=SCHEMA
+    )
+
+    entries = {entry["highvar"]: entry for entry in payload["varnodes"]}
+    assert "ptr" in entries
+    assert entries["ptr"]["type"] == "my_struct *"
 
 
 def test_unnamed_temporary_storage_falls_back_to_its_register():

@@ -52,6 +52,23 @@ jobs:
           tests/test_struct_map.py tests/test_kernel_gdt.py
           tests/test_json_output.py
 
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install . pytest pytest-cov
+      - run: >
+          pytest --cov=ghidra_decomp --cov-report=term-missing --cov-fail-under=80
+          tests/test_artifacts.py
+          tests/test_decompiler_helpers.py tests/test_filters.py
+          tests/test_parallel.py tests/test_callgraph_rendering.py
+          tests/test_alloc_map.py tests/test_pcode.py
+          tests/test_struct_map.py tests/test_kernel_gdt.py
+          tests/test_json_output.py
+
   e2e:
     runs-on: ubuntu-latest
     steps:
@@ -111,7 +128,7 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, typecheck, test, e2e]
+    needs: [lint, typecheck, test, coverage, e2e]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

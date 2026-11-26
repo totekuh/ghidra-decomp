@@ -33,6 +33,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest",
+    "pytest-cov",
     "ruff>=0.9",
     "mypy",
 ]
@@ -49,6 +50,28 @@ Issues = "https://github.com/totekuh/ghidra-decomp/issues"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["ghidra_decomp"]
+omit = [
+    "src/ghidra_decomp/polish/*",
+    "src/ghidra_decomp/decompiler/export/*",
+    "src/ghidra_decomp/decompiler/setup/ghidra.py",
+    "src/ghidra_decomp/decompiler/setup/resume.py",
+    "src/ghidra_decomp/decompiler/orchestrator.py",
+    "src/ghidra_decomp/kernel_gdt/export.py",
+    "src/ghidra_decomp/pdb.py",
+    "src/ghidra_decomp/cli/query_cmd.py",
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ghidra_decomp"]

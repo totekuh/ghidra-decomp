@@ -19,7 +19,8 @@ test:
 	$(VENV_PY) -m pytest tests/test_artifacts.py tests/test_decompiler_helpers.py \
 		tests/test_filters.py tests/test_parallel.py tests/test_callgraph_rendering.py \
 		tests/test_alloc_map.py tests/test_pcode.py tests/test_struct_map.py \
-		tests/test_kernel_gdt.py tests/test_json_output.py
+		tests/test_kernel_gdt.py tests/test_json_output.py \
+		--cov=ghidra_decomp --cov-report=term-missing --cov-fail-under=80
 
 lint:
 	pipx run ruff check src/ tests/

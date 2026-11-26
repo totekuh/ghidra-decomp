@@ -204,7 +204,23 @@ def fake_high_function(ops, blocks=None, symbols=None):
     )
 
 
-def fake_func(name="RTMPDeFragmentDataFrame", entry="00087514"):
+class FakeParameter:
+    def __init__(self, name, data_type, ordinal=0):
+        self._name = name
+        self._data_type = data_type
+        self._ordinal = ordinal
+
+    def getName(self):
+        return self._name
+
+    def getDataType(self):
+        return self._data_type
+
+    def getOrdinal(self):
+        return self._ordinal
+
+
+def fake_func(name="RTMPDeFragmentDataFrame", entry="00087514", parameters=None):
     body = SimpleNamespace(
         getAddressRanges=lambda _ordered: [
             SimpleNamespace(
@@ -213,10 +229,12 @@ def fake_func(name="RTMPDeFragmentDataFrame", entry="00087514"):
             )
         ]
     )
+    params = list(parameters or [])
     return SimpleNamespace(
         getName=lambda: name,
         getEntryPoint=lambda: SimpleNamespace(toString=lambda: entry),
         getBody=lambda: body,
+        getParameters=lambda: list(params),
     )
 
 
@@ -519,3 +537,79 @@ def test_rodata_skips_writable_globals():
     )
 
     assert payload["rodata"] == []
+
+
+def test_dwarf_param_type_overrides_generic_uchar_pointer():
+    high = FakeHighVariable(
+        "buffer", FakeDataType("uchar", display_name="uchar * *"), FakeStorage()
+    )
+    varnode = FakeVarnode(0x100, size=8, high=high)
+    op = FakeOp("COPY", FakeVarnode(0x200), [varnode])
+
+    struct_type = FakeDataType(
+        "mwifiex_ie_types_vendor_param_set",
+        display_name="mwifiex_ie_types_vendor_param_set * *",
+    )
+    func = fake_func(parameters=[FakeParameter("buffer", struct_type, ordinal=1)])
+
+    payload = serialize_high_function(
+        fake_high_function([op]), func, fake_program(), schema_version=SCHEMA
+    )
+
+    entries = {e["highvar"]: e for e in payload["varnodes"]}
+    assert entries["buffer"]["type"] == "mwifiex_ie_types_vendor_param_set * *"
+
+
+def test_dwarf_param_type_keeps_specific_high_variable_type():
+    high = FakeHighVariable(
+        "priv",
+        FakeDataType("mwifiex_private", display_name="mwifiex_private *"),
+        FakeStorage(),
+    )
+    varnode = FakeVarnode(0x100, size=8, high=high)
+    op = FakeOp("COPY", FakeVarnode(0x200), [varnode])
+
+    declared = FakeDataType("mwifiex_private", display_name="mwifiex_private *")
+    func = fake_func(parameters=[FakeParameter("priv", declared, ordinal=0)])
+
+    payload = serialize_high_function(
+        fake_high_function([op]), func, fake_program(), schema_version=SCHEMA
+    )
+
+    entries = {e["highvar"]: e for e in payload["varnodes"]}
+    assert entries["priv"]["type"] == "mwifiex_private *"
+
+
+def test_dwarf_param_type_no_override_when_high_type_is_not_generic():
+    high = FakeHighVariable(
+        "ctx",
+        FakeDataType("some_ctx", display_name="some_ctx *"),
+        FakeStorage(),
+    )
+    varnode = FakeVarnode(0x100, size=8, high=high)
+    op = FakeOp("COPY", FakeVarnode(0x200), [varnode])
+
+    declared = FakeDataType("other_ctx", display_name="other_ctx *")
+    func = fake_func(parameters=[FakeParameter("ctx", declared, ordinal=0)])
+
+    payload = serialize_high_function(
+        fake_high_function([op]), func, fake_program(), schema_version=SCHEMA
+    )
+
+    entries = {e["highvar"]: e for e in payload["varnodes"]}
+    assert entries["ctx"]["type"] == "some_ctx *"
+
+
+def test_dwarf_param_type_works_without_parameters():
+    high = FakeHighVariable(
+        "buf", FakeDataType("uchar", display_name="uchar *"), FakeStorage()
+    )
+    varnode = FakeVarnode(0x100, size=8, high=high)
+    op = FakeOp("COPY", FakeVarnode(0x200), [varnode])
+
+    payload = serialize_high_function(
+        fake_high_function([op]), fake_func(), fake_program(), schema_version=SCHEMA
+    )
+
+    entries = {e["highvar"]: e for e in payload["varnodes"]}
+    assert entries["buf"]["type"] == "uchar *"

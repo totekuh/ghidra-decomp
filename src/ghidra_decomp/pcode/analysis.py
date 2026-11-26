@@ -7,8 +7,10 @@ from typing import Any
 from .varnodes import (
     CALL_OPS,
     _array_extent,
+    _dwarf_param_types,
     _high_name,
     _high_storage,
+    _is_generic_pointer,
     _op_inputs,
     _space_name,
     _storage_record,
@@ -19,13 +21,16 @@ from .varnodes import (
 _CALL_OPS = CALL_OPS
 
 
-def _varnode_map(ops: list, namer: _VarnodeNamer, program) -> list[dict[str, Any]]:
+def _varnode_map(
+    ops: list, namer: _VarnodeNamer, program, func=None
+) -> list[dict[str, Any]]:
     """One entry per varnode that resolves to a recovered ``HighVariable``.
 
     Merged SSA varnodes can share a ``highvar`` name; that is kept, not collapsed,
     because it is what lets a consumer bind a varnode to the variable the
     pseudocode names.
     """
+    param_types = _dwarf_param_types(func)
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
     for op in ops:
@@ -44,12 +49,21 @@ def _varnode_map(ops: list, namer: _VarnodeNamer, program) -> list[dict[str, Any
                 continue
             seen.add(vid)
             data_type = high.getDataType()
+            type_name = (
+                data_type.getDisplayName() if data_type is not None else "undefined"
+            )
+            name = _high_name(high)
+            if (
+                param_types
+                and name in param_types
+                and _is_generic_pointer(type_name)
+                and not _is_generic_pointer(param_types[name])
+            ):
+                type_name = param_types[name]
             entry: dict[str, Any] = {
                 "vn": vid,
-                "highvar": _high_name(high),
-                "type": data_type.getDisplayName()
-                if data_type is not None
-                else "undefined",
+                "highvar": name,
+                "type": type_name,
                 "size": int(varnode.getSize()),
                 "storage": _high_storage(high, varnode, program),
             }

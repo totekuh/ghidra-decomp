@@ -159,6 +159,53 @@ def _high_storage(high, varnode, program) -> dict[str, Any]:
     return record
 
 
+_GENERIC_BASE_TYPES = frozenset(
+    {
+        "undefined",
+        "undefined1",
+        "undefined2",
+        "undefined4",
+        "undefined8",
+        "void",
+        "byte",
+        "uchar",
+        "uint8_t",
+        "u8",
+    }
+)
+
+
+def _is_generic_pointer(type_name: str) -> bool:
+    """True when a type is a pointer chain to a generic/primitive byte type."""
+    stripped = type_name.rstrip(" *")
+    return stripped in _GENERIC_BASE_TYPES
+
+
+def _dwarf_param_types(func) -> dict[str, str]:
+    """Map parameter names to their DWARF-declared type display names.
+
+    Returns an empty dict when no parameter metadata is available.
+    """
+    if func is None:
+        return {}
+    get_params = getattr(func, "getParameters", None)
+    if get_params is None:
+        return {}
+    try:
+        params = get_params()
+    except Exception:  # noqa: BLE001
+        return {}
+    result: dict[str, str] = {}
+    for p in params:
+        try:
+            dt = p.getDataType()
+            if dt is not None:
+                result[p.getName()] = dt.getDisplayName()
+        except Exception:  # noqa: BLE001, S112
+            continue
+    return result
+
+
 def _high_name(high) -> str:
     """Prefer the symbol's name; unnamed temporaries keep the variable's label."""
     symbol = high.getSymbol() if hasattr(high, "getSymbol") else None

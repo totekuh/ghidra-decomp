@@ -54,7 +54,7 @@ def serialize_high_function_with_context(
         "body_ranges": body_ranges,
         "arch": _arch(program),
         "ops": ops,
-        "varnodes": _varnode_map(ops_raw, namer, program),
+        "varnodes": _varnode_map(ops_raw, namer, program, func),
         "blocks": _blocks(high_function, time_to_seq),
         "calls": _calls(ops_raw, program, namer),
         "locals": _stack_locals(high_function),

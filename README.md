@@ -61,6 +61,7 @@ ghidra-decomp ./firmware.bin -o ./firmware_decomp
 | `--no-polish` | Skip the readability post-processing pipeline; emit raw Ghidra output | polish on |
 | `--aggressive` | Enable Ghidra's off-by-default Decompiler Parameter ID analyzer for better parameter/return types (slower) | off |
 | `--max-payload-mb` | Raise Ghidra's per-function decompiler payload cap (MB) to rescue very large functions | Ghidra default (~50MB) |
+| `--json` | Print a machine-readable JSON summary instead of human text | off |
 | `--build-kernel-gdt` | Build a `.gdt` type archive from a Linux kernel source tree. Requires `--arch` and `-o`. | |
 | `--arch` | Target architecture for `--build-kernel-gdt` (`x86_64`, `x86`, `arm`, `arm64`, `mips`, `riscv64`, `ppc`) | |
 | `--kernel-config` | Kernel `.config` or `autoconf.h` for `--build-kernel-gdt` | auto-detect |

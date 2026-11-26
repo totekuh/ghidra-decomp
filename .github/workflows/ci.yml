@@ -50,6 +50,7 @@ jobs:
           tests/test_parallel.py tests/test_callgraph_rendering.py
           tests/test_alloc_map.py tests/test_pcode.py
           tests/test_struct_map.py tests/test_kernel_gdt.py
+          tests/test_json_output.py
 
   e2e:
     runs-on: ubuntu-latest

@@ -1,5 +1,8 @@
 """CLI entry point for ghidra-decomp."""
 
+from __future__ import annotations
+
+import json
 from pathlib import Path
 
 import click
@@ -9,6 +12,25 @@ from ..decompiler import (
     decompile_binary,
     list_languages,
 )
+
+
+def _build_json_summary(binary: Path, output: Path) -> dict:
+    """Build a machine-readable summary from the written manifest."""
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    counts = manifest.get("counts", {})
+    return {
+        "binary": str(binary),
+        "output": str(output),
+        "version": __version__,
+        "functions_total": counts.get("discovered", 0),
+        "functions_successful": counts.get("successful", 0),
+        "functions_fallback": counts.get("fallback", 0),
+        "functions_failed": counts.get("failed", 0),
+        "functions_reused": counts.get("skipped", 0),
+        "manifest": str(manifest_path),
+    }
+
 
 # ── Export command (the main command) ────────────────────────────────
 
@@ -276,6 +298,13 @@ from ..decompiler import (
     help="Only use curated priority headers for --build-kernel-gdt "
     "(skip full tree scan).",
 )
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    default=False,
+    help="Print a machine-readable JSON summary to stdout instead of human text.",
+)
 def main(
     binary: Path | None,
     output: Path | None,
@@ -315,105 +344,118 @@ def main(
     arch: str | None,
     kernel_config: Path | None,
     no_tree_headers: bool,
+    json_output: bool,
 ):
     """Decompile BINARY into a browsable source tree.
 
     Produces one .c file per function, plus JSON indexes for strings,
     call graph, imports, and exports.
     """
-    if list_langs:
-        list_languages(ghidra_path=ghidra_path)
-        return
+    _original_echo = click.echo
+    if json_output:
+        click.echo = lambda *a, **kw: None  # type: ignore[assignment]
+    try:
+        if list_langs:
+            list_languages(ghidra_path=ghidra_path)
+            return
 
-    if kernel_src is not None:
+        if kernel_src is not None:
+            if output is None:
+                raise click.UsageError("--build-kernel-gdt requires -o.")
+            if arch is None:
+                raise click.UsageError("--build-kernel-gdt requires --arch.")
+            from ghidra_decomp.kernel_gdt import KernelGdtError, build_kernel_gdt
+
+            try:
+                stats = build_kernel_gdt(
+                    kernel_src.resolve(),
+                    arch,
+                    output.resolve(),
+                    config=kernel_config,
+                    ghidra_path=ghidra_path,
+                    max_ram_percent=max_ram_percent,
+                    scan_tree=not no_tree_headers,
+                )
+            except KernelGdtError as exc:
+                raise click.ClickException(str(exc)) from exc
+            if json_output:
+                _original_echo(json.dumps(stats, indent=2))
+            else:
+                click.echo(f"\nDone. {stats['types_count']} types exported to {output}")
+            return
+
+        if binary is None:
+            raise click.UsageError("Missing argument 'BINARY'.")
+
+        if compiler is not None and language is None:
+            raise click.UsageError("--compiler requires --language.")
+
+        binary = binary.resolve()
         if output is None:
-            raise click.UsageError("--build-kernel-gdt requires -o.")
-        if arch is None:
-            raise click.UsageError("--build-kernel-gdt requires --arch.")
-        from ..kernel_gdt import KernelGdtError, build_kernel_gdt
+            output = Path.cwd() / f"{binary.stem}_decomp"
 
-        try:
-            stats = build_kernel_gdt(
-                kernel_src.resolve(),
-                arch,
-                output.resolve(),
-                config=kernel_config,
-                ghidra_path=ghidra_path,
-                max_ram_percent=max_ram_percent,
-                scan_tree=not no_tree_headers,
-            )
-        except KernelGdtError as exc:
-            raise click.ClickException(str(exc)) from exc
-        click.echo(f"\nDone. {stats['types_count']} types exported to {output}")
-        return
+        output = output.resolve()
 
-    if binary is None:
-        raise click.UsageError("Missing argument 'BINARY'.")
+        click.echo(f"Binary:  {binary}")
+        click.echo(f"Output:  {output}")
+        if base_addr is not None:
+            click.echo(f"Base:    {base_addr}")
+        if entry is not None:
+            click.echo(f"Entry:   {entry}")
+        if language is not None:
+            click.echo(f"Lang:    {language}")
+        if compiler is not None:
+            click.echo(f"CSpec:   {compiler}")
+        if pdb is not None:
+            click.echo(f"PDB:     {pdb}")
 
-    if compiler is not None and language is None:
-        raise click.UsageError("--compiler requires --language.")
+        if struct_map:
+            alloc_map = True
+        if alloc_map:
+            pcode = True
 
-    binary = binary.resolve()
-    if output is None:
-        output = Path.cwd() / f"{binary.stem}_decomp"
+        decompile_binary(
+            binary,
+            output,
+            timeout=timeout,
+            combined=combined,
+            pcode=pcode,
+            alloc_map=alloc_map,
+            struct_map=struct_map,
+            alloc_map_config=alloc_map_config,
+            ghidra_path=ghidra_path,
+            base_addr=base_addr,
+            entry=entry,
+            language=language,
+            compiler=compiler,
+            resume=resume,
+            workers=workers,
+            include=include,
+            exclude=exclude,
+            function=function,
+            gdt=tuple(str(path) for path in gdt),
+            pdb=pdb,
+            gzf=gzf,
+            semgrep_config=semgrep_config,
+            verbose_analysis=verbose_analysis,
+            mermaid=mermaid,
+            cpp_export=cpp_export,
+            max_ram_percent=max_ram_percent,
+            print_jvm_flags=print_jvm_flags,
+            callgraph_depth=callgraph_depth,
+            condense_threshold=condense_threshold,
+            reachable=reachable,
+            polish=not no_polish,
+            aggressive=aggressive,
+            max_payload_mb=max_payload_mb,
+        )
 
-    output = output.resolve()
-
-    click.echo(f"Binary:  {binary}")
-    click.echo(f"Output:  {output}")
-    if base_addr is not None:
-        click.echo(f"Base:    {base_addr}")
-    if entry is not None:
-        click.echo(f"Entry:   {entry}")
-    if language is not None:
-        click.echo(f"Lang:    {language}")
-    if compiler is not None:
-        click.echo(f"CSpec:   {compiler}")
-    if pdb is not None:
-        click.echo(f"PDB:     {pdb}")
-
-    if struct_map:
-        alloc_map = True
-    if alloc_map:
-        pcode = True
-
-    decompile_binary(
-        binary,
-        output,
-        timeout=timeout,
-        combined=combined,
-        pcode=pcode,
-        alloc_map=alloc_map,
-        struct_map=struct_map,
-        alloc_map_config=alloc_map_config,
-        ghidra_path=ghidra_path,
-        base_addr=base_addr,
-        entry=entry,
-        language=language,
-        compiler=compiler,
-        resume=resume,
-        workers=workers,
-        include=include,
-        exclude=exclude,
-        function=function,
-        gdt=tuple(str(path) for path in gdt),
-        pdb=pdb,
-        gzf=gzf,
-        semgrep_config=semgrep_config,
-        verbose_analysis=verbose_analysis,
-        mermaid=mermaid,
-        cpp_export=cpp_export,
-        max_ram_percent=max_ram_percent,
-        print_jvm_flags=print_jvm_flags,
-        callgraph_depth=callgraph_depth,
-        condense_threshold=condense_threshold,
-        reachable=reachable,
-        polish=not no_polish,
-        aggressive=aggressive,
-        max_payload_mb=max_payload_mb,
-    )
-
-    click.echo(f"\nDone. Output at: {output}")
+        if json_output:
+            _original_echo(json.dumps(_build_json_summary(binary, output), indent=2))
+        else:
+            click.echo(f"\nDone. Output at: {output}")
+    finally:
+        click.echo = _original_echo  # type: ignore[assignment]
 
 
 if __name__ == "__main__":

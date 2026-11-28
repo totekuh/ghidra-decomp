@@ -86,9 +86,14 @@ are folded. One envelope per function:
   `back_edges` edge list on the source block and a `loop_header` flag on the
   target.
 - **`calls`** — each `CALL`/`CALLIND` with its resolved `callee`/`callee_addr`
-  (null when indirect or unresolved) and positional `args`. The arguments are the
-  op's inputs after input[0] (the call target), i.e. Ghidra's own parameter
-  analysis — no per-architecture calling-convention recovery downstream.
+  (null when indirect or unresolved), positional `args`, and `arg_types`. The
+  arguments are the op's inputs after input[0] (the call target), i.e. Ghidra's
+  own parameter analysis — no per-architecture calling-convention recovery
+  downstream. `arg_types` is a parallel array to `args`: each entry is the
+  caller-site `HighVariable` type display name (e.g. `"struct foo *"`), or `null`
+  for constants and varnodes with no recovered type. `return_type` is the
+  callee's return type as propagated by the decompiler to the output varnode,
+  or `null` when the call has no output or no recovered type.
 - **`locals`** — stack-resident variables with base `stack_offset`, byte `size`,
   and array `{"elem_size", "count"}`: stack-buffer capacity, the alloc side for
   stack overflows. Empty when a function keeps no buffers on the stack.

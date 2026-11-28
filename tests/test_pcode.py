@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from ghidra_decomp.pcode import serialize_high_function
 
-SCHEMA = 8
+SCHEMA = 9
 
 
 class FakeStorage:
@@ -628,6 +628,119 @@ def test_dwarf_param_type_works_without_parameters():
 
     entries = {e["highvar"]: e for e in payload["varnodes"]}
     assert entries["buf"]["type"] == "uchar *"
+
+
+def test_call_arg_types_from_high_variable():
+    target = FakeVarnode(0x128104, space="ram", addr="00128104")
+    dst_high = FakeHighVariable(
+        "dst", FakeDataType("my_struct", display_name="my_struct *"), FakeStorage()
+    )
+    src_high = FakeHighVariable(
+        "src",
+        FakeDataType("other_struct", display_name="other_struct *"),
+        FakeStorage(),
+    )
+    dst = FakeVarnode(0x300, high=dst_high)
+    src = FakeVarnode(0x400, high=src_high)
+    call = FakeOp("CALL", None, [target, dst, src])
+    program = fake_program(
+        functions={"00128104": SimpleNamespace(getName=lambda: "do_copy")}
+    )
+
+    payload = serialize_high_function(
+        fake_high_function([call]), fake_func(), program, schema_version=SCHEMA
+    )
+
+    entry = payload["calls"][0]
+    assert entry["arg_types"] == ["my_struct *", "other_struct *"]
+
+
+def test_call_arg_types_null_for_constants_and_untyped():
+    target = FakeVarnode(0x128104, space="ram", addr="00128104")
+    typed_high = FakeHighVariable(
+        "buf", FakeDataType("hci_dev", display_name="hci_dev *"), FakeStorage()
+    )
+    typed_vn = FakeVarnode(0x300, high=typed_high)
+    untyped_vn = FakeVarnode(0x400)
+    call = FakeOp("CALL", None, [target, typed_vn, const(0x40), untyped_vn])
+    program = fake_program(
+        functions={"00128104": SimpleNamespace(getName=lambda: "memcpy")}
+    )
+
+    payload = serialize_high_function(
+        fake_high_function([call]), fake_func(), program, schema_version=SCHEMA
+    )
+
+    entry = payload["calls"][0]
+    assert entry["arg_types"] == ["hci_dev *", None, None]
+
+
+def test_callind_arg_types():
+    typed_high = FakeHighVariable(
+        "ctx", FakeDataType("net_device", display_name="net_device *"), FakeStorage()
+    )
+    arg = FakeVarnode(0x300, high=typed_high)
+    call = FakeOp("CALLIND", None, [FakeVarnode(0x100, space="register"), arg])
+
+    payload = serialize_high_function(
+        fake_high_function([call]), fake_func(), fake_program(), schema_version=SCHEMA
+    )
+
+    entry = payload["calls"][0]
+    assert entry["arg_types"] == ["net_device *"]
+
+
+def test_call_return_type_from_high_variable():
+    target = FakeVarnode(0x128104, space="ram", addr="00128104")
+    ret_high = FakeHighVariable(
+        "ret",
+        FakeDataType("mwifiex_private", display_name="mwifiex_private *"),
+        FakeStorage(),
+    )
+    ret_vn = FakeVarnode(0x500, size=8, high=ret_high)
+    call = FakeOp("CALL", ret_vn, [target, FakeVarnode(0x300)])
+    program = fake_program(
+        functions={"00128104": SimpleNamespace(getName=lambda: "alloc_priv")}
+    )
+
+    payload = serialize_high_function(
+        fake_high_function([call]), fake_func(), program, schema_version=SCHEMA
+    )
+
+    entry = payload["calls"][0]
+    assert entry["return_type"] == "mwifiex_private *"
+
+
+def test_call_return_type_null_when_no_output():
+    target = FakeVarnode(0x128104, space="ram", addr="00128104")
+    call = FakeOp("CALL", None, [target, FakeVarnode(0x300)])
+    program = fake_program(
+        functions={"00128104": SimpleNamespace(getName=lambda: "free")}
+    )
+
+    payload = serialize_high_function(
+        fake_high_function([call]), fake_func(), program, schema_version=SCHEMA
+    )
+
+    entry = payload["calls"][0]
+    assert entry["return_type"] is None
+
+
+def test_callind_return_type():
+    ret_high = FakeHighVariable(
+        "ret",
+        FakeDataType("net_device", display_name="net_device *"),
+        FakeStorage(),
+    )
+    ret_vn = FakeVarnode(0x500, size=8, high=ret_high)
+    call = FakeOp("CALLIND", ret_vn, [FakeVarnode(0x100, space="register")])
+
+    payload = serialize_high_function(
+        fake_high_function([call]), fake_func(), fake_program(), schema_version=SCHEMA
+    )
+
+    entry = payload["calls"][0]
+    assert entry["return_type"] == "net_device *"
 
 
 def test_dwarf_param_type_ignores_analysis_sourced_params():

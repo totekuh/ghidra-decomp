@@ -184,6 +184,25 @@ def _calls(ops: list, program, namer: _VarnodeNamer) -> list[dict[str, Any]]:
             except Exception:  # noqa: BLE001, S110 - an unresolved callee stays null
                 pass
         args = [_varnode_ref(vn, namer) for vn in inputs[1:]]
+        arg_types: list[str | None] = []
+        for vn in inputs[1:]:
+            if vn is None or vn.isConstant():
+                arg_types.append(None)
+                continue
+            high = vn.getHigh()
+            if high is None:
+                arg_types.append(None)
+                continue
+            dt = high.getDataType()
+            arg_types.append(dt.getDisplayName() if dt is not None else None)
+        return_type: str | None = None
+        output = op.getOutput()
+        if output is not None and not output.isConstant():
+            high = output.getHigh()
+            if high is not None:
+                dt = high.getDataType()
+                if dt is not None:
+                    return_type = dt.getDisplayName()
         out.append(
             {
                 "seq": seq,
@@ -191,6 +210,8 @@ def _calls(ops: list, program, namer: _VarnodeNamer) -> list[dict[str, Any]]:
                 "callee": callee_name,
                 "callee_addr": callee_addr,
                 "args": args,
+                "arg_types": arg_types,
+                "return_type": return_type,
             }
         )
     return out

@@ -62,6 +62,8 @@ def test_pcode_sidecars_are_produced_and_registered(pcode_corpus):
         assert sha256_of(pcode_path) == record["artifacts"]["pcode_sha256"]
         payload = json.loads(pcode_path.read_text(encoding="utf-8"))
         assert {"ops", "varnodes", "blocks", "calls"} <= set(payload)
+        for call in payload["calls"]:
+            assert "return_type" in call
 
 
 def test_pcode_schema_version_is_current(pcode_corpus):
@@ -69,7 +71,7 @@ def test_pcode_schema_version_is_current(pcode_corpus):
         payload = json.loads(
             (pcode_corpus / record["artifacts"]["pcode"]).read_text(encoding="utf-8")
         )
-        assert payload["schema_version"] == 8
+        assert payload["schema_version"] == 9
 
 
 def test_varnode_types_carry_pointer_markers(pcode_corpus):
@@ -197,6 +199,10 @@ def test_owned_fixture_exposes_every_pcode_fact(
     copies = [c for c in bounded["calls"] if c["callee"] == "copy_bytes"]
     assert copies, "copy_bytes call not found"
     assert all(len(c["args"]) == 3 for c in copies)
+
+    # At least one call should have a resolved return type.
+    return_types = [c["return_type"] for c in bounded["calls"] if c["return_type"]]
+    assert return_types, "no call has a resolved return_type"
 
     # The 64-byte stack buffer is reported with its array capacity.
     buffers = [loc for loc in bounded["locals"] if loc.get("array")]

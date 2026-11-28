@@ -80,7 +80,7 @@ ghidra-decomp --build-kernel-gdt /usr/src/linux-source-6.1 \
 ghidra-decomp --struct-map --gdt linux-6.1-x86_64.gdt some_driver.ko
 ```
 
-The pipeline discovers ~66 curated kernel headers, then walks the full source tree for additional `.h` files under `drivers/`, `net/`, `sound/`, `fs/`, and other subsystems. This captures driver-internal structs (e.g. `mwifiex_private`) that only live outside `include/`.
+The pipeline discovers ~71 curated kernel headers, then walks the full source tree for additional `.h` files under `drivers/`, `net/`, `sound/`, `fs/`, and other subsystems. This captures driver-internal structs (e.g. `mwifiex_private`) that only live outside `include/`.
 
 Tree headers are grouped by top-level directory and preprocessed independently with `gcc -E`. If one directory group fails (e.g. a header with an unresolvable include), only that group is skipped — the rest survive. Priority headers always succeed or the entire build fails.
 
@@ -159,7 +159,7 @@ ghidra-decomp-query paths ./firmware_decomp main encrypt_data --max-depth 50
 ## Docker
 
 ```bash
-docker compose run --rm ghidra-decomp ./firmware.bin -o /output/firmware_decomp
+docker compose run --rm ghidra-decomp /input/firmware.bin -o /output/firmware_decomp
 ```
 
 ## Workflow

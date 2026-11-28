@@ -67,8 +67,8 @@ def _build_json_summary(binary: Path, output: Path) -> dict:
     is_flag=True,
     default=False,
     help="Also emit a <function>.pcode.json per function: SSA high-pcode ops, "
-    "def-use, the block CFG, varnode storage, and resolved call arguments. "
-    "Large output; off by default.",
+    "def-use, the block CFG, varnode storage, resolved call arguments with "
+    "caller-site types, and return types. Large output; off by default.",
 )
 @click.option(
     "--alloc-map",

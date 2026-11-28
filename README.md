@@ -13,10 +13,20 @@ Reverse engineering through Ghidra's GUI (or MCP) means looking at one function 
 Requires [Ghidra](https://ghidra-sre.org/) 12.0+ and PyGhidra 3.0+.
 
 ```bash
-make install
+# From PyPI
+pipx install ghidra-decomp
+
+# Or with pip
+pip install ghidra-decomp
 ```
 
-Or manually: `pip install -e .`
+For development:
+
+```bash
+make install          # pipx install from local checkout
+# or
+pip install -e .
+```
 
 Set `GHIDRA_INSTALL_DIR` to your Ghidra installation, or pass `--ghidra-path`.
 

@@ -31,7 +31,7 @@ ghidra-decomp ./firmware.bin -o ./firmware_decomp
 | `-o, --output` | Output directory | `<binary>_decomp/` |
 | `--timeout` | Per-function decompilation timeout (seconds) | 60 |
 | `--combined` | Also emit `all_functions.c` | off |
-| `--pcode` | Also emit `<function>.pcode.json` per function: SSA high-pcode ops, def-use, block CFG, varnode storage, and resolved call arguments | off |
+| `--pcode` | Also emit `<function>.pcode.json` per function: SSA high-pcode ops, def-use, block CFG, varnode storage, resolved call arguments with caller-site types, and return types | off |
 | `--alloc-map` | Emit `alloc_map.json` recording every allocation call site, where the result pointer is stored, and how it flows forward. Detects allocator wrappers and resolves sizes through wrapper chains. Implies `--pcode`. | off |
 | `--alloc-map-config` | JSON file extending the built-in allocator list for `--alloc-map` | none |
 | `--struct-map` | Emit `struct_map.json` recording every resolved struct/union type referenced by decompiled code, with field layouts sorted by offset. When combined with `--gdt`, includes all GDT types unfiltered. Implies `--alloc-map`. | off |
